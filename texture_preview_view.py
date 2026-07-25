@@ -40,7 +40,13 @@ class TexturePreviewView(QGraphicsView):
             Qt.GlobalColor.darkGray
         )
 
-    def set_image(self, pixmap: QPixmap) -> None:
+    def set_image(
+        self,
+        pixmap: QPixmap,
+        fit_image: bool = False,
+    ) -> None:
+        first_image = not self._has_image
+
         self._image_item.setPixmap(pixmap)
         self._scene.setSceneRect(
             self._image_item.boundingRect()
@@ -48,8 +54,14 @@ class TexturePreviewView(QGraphicsView):
 
         self._has_image = not pixmap.isNull()
 
-        if self._has_image:
+        if self._has_image and (first_image or fit_image):
             self.fit_image_to_window()
+
+    def clear_image(self) -> None:
+        self._image_item.setPixmap(QPixmap())
+        self._scene.setSceneRect(0, 0, 0, 0)
+        self._has_image = False
+        self.resetTransform()
 
     def fit_image_to_window(self) -> None:
         if not self._has_image:

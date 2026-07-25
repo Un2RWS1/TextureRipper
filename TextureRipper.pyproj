@@ -23,6 +23,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="image_view.py" />
+    <Compile Include="live_preview_panel.py" />
     <Compile Include="Main.py" />
     <Compile Include="selection_manager.py" />
     <Compile Include="texture_preview.py" />

@@ -3,6 +3,7 @@ from pathlib import Path
 
 import cv2
 
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -12,14 +13,20 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSplitter,
     QToolBar,
     QVBoxLayout,
     QWidget,
 )
 
 from image_view import ImageView
+from live_preview_panel import LivePreviewPanel
 from texture_preview import TexturePreviewDialog
-from texture_processing import extract_texture
+from texture_processing import (
+    extract_texture,
+    make_texture_seamless,
+    rgba_array_to_qpixmap,
+)
 
 
 class TextureRipperWindow(QMainWindow):
@@ -27,10 +34,28 @@ class TextureRipperWindow(QMainWindow):
         super().__init__()
 
         self.setWindowTitle("Texture Ripper")
-        self.resize(1200, 800)
+        self.resize(1400, 850)
 
+        self.current_texture_array = None
+
+        # Main image editor
         self.image_view = ImageView()
 
+        # Live texture preview panel
+        self.live_preview_panel = LivePreviewPanel()
+        self.live_preview_panel.seamless_changed.connect(
+            self.on_seamless_changed
+        )
+
+        # Delay live-preview regeneration slightly while dragging.
+        self.preview_timer = QTimer(self)
+        self.preview_timer.setSingleShot(True)
+        self.preview_timer.setInterval(80)
+        self.preview_timer.timeout.connect(
+            self.update_live_preview
+        )
+
+        # Selection signals
         self.image_view.selection_manager.selection_changed.connect(
             self.on_selection_changed
         )
@@ -39,6 +64,7 @@ class TextureRipperWindow(QMainWindow):
             self.on_selection_completed
         )
 
+        # Main controls
         self.open_button = QPushButton("Open Image")
         self.open_button.clicked.connect(self.open_image)
 
@@ -57,9 +83,9 @@ class TextureRipperWindow(QMainWindow):
             self.image_view.clear_selection
         )
 
-        self.extract_button = QPushButton("Extract Texture")
+        self.extract_button = QPushButton("Open Full Preview")
         self.extract_button.clicked.connect(
-            self.extract_selected_texture
+            self.open_full_preview
         )
         self.extract_button.setEnabled(False)
 
@@ -67,6 +93,7 @@ class TextureRipperWindow(QMainWindow):
             "Selection: 0 / 4 points"
         )
 
+        # Top control row
         controls_layout = QHBoxLayout()
         controls_layout.addWidget(self.open_button)
         controls_layout.addWidget(self.fit_button)
@@ -76,9 +103,31 @@ class TextureRipperWindow(QMainWindow):
         controls_layout.addStretch()
         controls_layout.addWidget(self.selection_status)
 
+        # Left-side editor container
+        editor_widget = QWidget()
+        editor_layout = QVBoxLayout()
+        editor_layout.setContentsMargins(0, 0, 0, 0)
+        editor_layout.addWidget(self.image_view)
+        editor_widget.setLayout(editor_layout)
+
+        # Resizable editor/preview divider
+        self.main_splitter = QSplitter(
+            Qt.Orientation.Horizontal
+        )
+        self.main_splitter.addWidget(editor_widget)
+        self.main_splitter.addWidget(
+            self.live_preview_panel
+        )
+
+        self.main_splitter.setStretchFactor(0, 4)
+        self.main_splitter.setStretchFactor(1, 1)
+        self.main_splitter.setSizes([1050, 350])
+        self.main_splitter.setChildrenCollapsible(False)
+
+        # Main window layout
         main_layout = QVBoxLayout()
         main_layout.addLayout(controls_layout)
-        main_layout.addWidget(self.image_view, 1)
+        main_layout.addWidget(self.main_splitter, 1)
 
         central_widget = QWidget()
         central_widget.setLayout(main_layout)
@@ -91,6 +140,7 @@ class TextureRipperWindow(QMainWindow):
         self.statusBar().showMessage("Ready")
 
     def create_menu(self) -> None:
+        # File menu
         file_menu = self.menuBar().addMenu("&File")
 
         open_action = QAction("&Open Image", self)
@@ -105,6 +155,28 @@ class TextureRipperWindow(QMainWindow):
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
 
+        # Edit menu
+        edit_menu = self.menuBar().addMenu("&Edit")
+
+        undo_action = (
+            self.image_view.selection_manager.undo_stack.createUndoAction(
+                self,
+                "&Undo",
+            )
+        )
+        undo_action.setShortcut("Ctrl+Z")
+        edit_menu.addAction(undo_action)
+
+        redo_action = (
+            self.image_view.selection_manager.undo_stack.createRedoAction(
+                self,
+                "&Redo",
+            )
+        )
+        redo_action.setShortcut("Ctrl+Shift+Z")
+        edit_menu.addAction(redo_action)
+
+        # Selection menu
         selection_menu = self.menuBar().addMenu(
             "&Selection"
         )
@@ -131,16 +203,17 @@ class TextureRipperWindow(QMainWindow):
 
         selection_menu.addSeparator()
 
-        extract_action = QAction(
-            "&Extract Texture",
+        preview_action = QAction(
+            "Open &Full Preview",
             self,
         )
-        extract_action.setShortcut("Ctrl+E")
-        extract_action.triggered.connect(
-            self.extract_selected_texture
+        preview_action.setShortcut("Ctrl+E")
+        preview_action.triggered.connect(
+            self.open_full_preview
         )
-        selection_menu.addAction(extract_action)
+        selection_menu.addAction(preview_action)
 
+        # View menu
         view_menu = self.menuBar().addMenu("&View")
 
         fit_action = QAction("&Fit Image", self)
@@ -160,6 +233,26 @@ class TextureRipperWindow(QMainWindow):
         open_action.triggered.connect(self.open_image)
         toolbar.addAction(open_action)
 
+        toolbar.addSeparator()
+
+        undo_action = (
+            self.image_view.selection_manager.undo_stack.createUndoAction(
+                self,
+                "Undo",
+            )
+        )
+        toolbar.addAction(undo_action)
+
+        redo_action = (
+            self.image_view.selection_manager.undo_stack.createRedoAction(
+                self,
+                "Redo",
+            )
+        )
+        toolbar.addAction(redo_action)
+
+        toolbar.addSeparator()
+
         select_action = QAction("Select", self)
         select_action.triggered.connect(
             self.start_selection
@@ -172,11 +265,11 @@ class TextureRipperWindow(QMainWindow):
         )
         toolbar.addAction(clear_action)
 
-        extract_action = QAction("Extract", self)
-        extract_action.triggered.connect(
-            self.extract_selected_texture
+        preview_action = QAction("Full Preview", self)
+        preview_action.triggered.connect(
+            self.open_full_preview
         )
-        toolbar.addAction(extract_action)
+        toolbar.addAction(preview_action)
 
         fit_action = QAction("Fit", self)
         fit_action.triggered.connect(
@@ -209,6 +302,10 @@ class TextureRipperWindow(QMainWindow):
             )
             return
 
+        self.preview_timer.stop()
+        self.current_texture_array = None
+        self.live_preview_panel.clear_texture()
+
         self.image_view.set_image(pixmap)
 
         filename = Path(file_path).name
@@ -228,6 +325,10 @@ class TextureRipperWindow(QMainWindow):
             )
             return
 
+        self.preview_timer.stop()
+        self.current_texture_array = None
+        self.live_preview_panel.clear_texture()
+
         self.image_view.clear_selection()
         self.image_view.set_selection_mode(True)
 
@@ -243,27 +344,119 @@ class TextureRipperWindow(QMainWindow):
             f"Selection: {point_count} / 4 points"
         )
 
+        selection_complete = point_count == 4
+
         self.extract_button.setEnabled(
-            point_count == 4
+            selection_complete
         )
 
         if point_count == 0:
+            self.image_view.set_selection_mode(False)
+
+            self.preview_timer.stop()
+            self.current_texture_array = None
+            self.live_preview_panel.clear_texture()
+
             self.statusBar().showMessage(
                 "Selection cleared."
             )
 
         elif point_count < 4:
+            # This also handles undoing one or more selection points.
+            self.image_view.set_selection_mode(True)
+
+            self.preview_timer.stop()
+            self.current_texture_array = None
+            self.live_preview_panel.clear_texture()
+
             self.statusBar().showMessage(
-                f"Selection point {point_count} of 4 placed."
+                f"Selection point {point_count} of 4 placed. "
+                "Click to place the next point."
             )
 
+        else:
+            # This also handles redoing the fourth point.
+            self.image_view.set_selection_mode(False)
+
+            # Restarting the timer debounces live-preview updates
+            # while a selection handle is being dragged.
+            self.preview_timer.start()
+
     def on_selection_completed(self, points: list) -> None:
+        self.image_view.set_selection_mode(False)
+
         self.statusBar().showMessage(
-            "Selection complete. Adjust the handles, "
-            "then click Extract Texture."
+            "Selection complete. Adjust the handles while "
+            "watching the live preview."
         )
 
-    def extract_selected_texture(self) -> None:
+        self.update_live_preview(
+            fit_image=True
+        )
+
+    def on_seamless_changed(self, enabled: bool) -> None:
+        if len(
+            self.image_view.get_selection_points()
+        ) == 4:
+            self.update_live_preview(
+                fit_image=False
+            )
+
+        if enabled:
+            self.statusBar().showMessage(
+                "Seamless mode enabled."
+            )
+        else:
+            self.statusBar().showMessage(
+                "Seamless mode disabled."
+            )
+
+    def update_live_preview(
+        self,
+        fit_image: bool = False,
+    ) -> None:
+        points = self.image_view.get_selection_points()
+
+        if len(points) != 4:
+            return
+
+        source_pixmap = self.image_view.get_image()
+
+        if source_pixmap.isNull():
+            return
+
+        try:
+            texture_array = extract_texture(
+                source_pixmap.toImage(),
+                points,
+            )
+
+            if self.live_preview_panel.seamless_enabled():
+                texture_array = make_texture_seamless(
+                    texture_array,
+                    blend_fraction=0.10,
+                )
+
+            texture_pixmap = rgba_array_to_qpixmap(
+                texture_array
+            )
+
+        except (ValueError, cv2.error) as error:
+            self.current_texture_array = None
+
+            self.live_preview_panel.show_error(
+                str(error)
+            )
+            return
+
+        self.current_texture_array = texture_array
+
+        self.live_preview_panel.set_texture(
+            texture_pixmap,
+            fit_image=fit_image,
+        )
+
+    def open_full_preview(self) -> None:
         points = self.image_view.get_selection_points()
 
         if len(points) != 4:
@@ -274,32 +467,22 @@ class TextureRipperWindow(QMainWindow):
             )
             return
 
-        source_pixmap = self.image_view.get_image()
+        # Always regenerate the final preview from the latest
+        # corner locations and seamless setting.
+        self.update_live_preview(
+            fit_image=False
+        )
 
-        if source_pixmap.isNull():
+        if self.current_texture_array is None:
             QMessageBox.warning(
                 self,
-                "No Image",
-                "There is no image to extract from.",
-            )
-            return
-
-        try:
-            texture_array = extract_texture(
-                source_pixmap.toImage(),
-                points,
-            )
-
-        except (ValueError, cv2.error) as error:
-            QMessageBox.critical(
-                self,
-                "Extraction Failed",
-                str(error),
+                "Preview Unavailable",
+                "The texture preview could not be generated.",
             )
             return
 
         preview_dialog = TexturePreviewDialog(
-            texture_array,
+            self.current_texture_array,
             self,
         )
 

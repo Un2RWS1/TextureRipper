@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QGraphicsPixmapItem,
     QGraphicsPolygonItem,
     QGraphicsScene,
+    QGraphicsSceneMouseEvent,
     QGraphicsView,
 )
 
@@ -27,6 +28,7 @@ class SelectionHandle(QGraphicsEllipseItem):
         index: int,
         center: QPointF,
         moved_callback,
+        move_finished_callback,
         radius: float = 8.0,
     ) -> None:
         super().__init__(
@@ -38,6 +40,8 @@ class SelectionHandle(QGraphicsEllipseItem):
 
         self.index = index
         self.moved_callback = moved_callback
+        self.move_finished_callback = move_finished_callback
+        self.drag_start_position = QPointF(center)
 
         self.setPos(center)
 
@@ -48,23 +52,40 @@ class SelectionHandle(QGraphicsEllipseItem):
             QGraphicsItem.GraphicsItemFlag.ItemIsMovable,
             True,
         )
-
         self.setFlag(
             QGraphicsItem.GraphicsItemFlag.ItemIsSelectable,
             True,
         )
-
         self.setFlag(
             QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges,
             True,
         )
-
         self.setFlag(
             QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations,
             True,
         )
 
         self.setZValue(3)
+
+    def mousePressEvent(
+        self,
+        event: QGraphicsSceneMouseEvent,
+    ) -> None:
+        self.drag_start_position = QPointF(self.pos())
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(
+        self,
+        event: QGraphicsSceneMouseEvent,
+    ) -> None:
+        super().mouseReleaseEvent(event)
+
+        if self.move_finished_callback is not None:
+            self.move_finished_callback(
+                self.index,
+                self.drag_start_position,
+                QPointF(self.pos()),
+            )
 
     def itemChange(self, change, value):
         if (
@@ -74,7 +95,7 @@ class SelectionHandle(QGraphicsEllipseItem):
             if self.moved_callback is not None:
                 self.moved_callback(
                     self.index,
-                    self.pos(),
+                    QPointF(self.pos()),
                 )
 
         return super().itemChange(change, value)
@@ -120,19 +141,18 @@ class ImageView(QGraphicsView):
         self.setTransformationAnchor(
             QGraphicsView.ViewportAnchor.AnchorUnderMouse
         )
-
         self.setResizeAnchor(
             QGraphicsView.ViewportAnchor.AnchorViewCenter
         )
 
         self.setBackgroundBrush(QColor(45, 45, 45))
-
         self.setDragMode(
             QGraphicsView.DragMode.ScrollHandDrag
         )
 
     def set_image(self, pixmap: QPixmap) -> None:
-        self.clear_selection()
+        self.set_selection_mode(False)
+        self.selection_manager.reset()
 
         self._image_item.setPixmap(pixmap)
         self._scene.setSceneRect(
@@ -188,6 +208,17 @@ class ImageView(QGraphicsView):
     ) -> bool:
         return self._image_item.boundingRect().contains(point)
 
+    def constrain_point_to_image(
+        self,
+        point: QPointF,
+    ) -> QPointF:
+        bounds = self._image_item.boundingRect()
+
+        return QPointF(
+            max(bounds.left(), min(point.x(), bounds.right())),
+            max(bounds.top(), min(point.y(), bounds.bottom())),
+        )
+
     def handle_moved(
         self,
         index: int,
@@ -196,12 +227,32 @@ class ImageView(QGraphicsView):
         if self._updating_handles:
             return
 
-        if not self.point_is_inside_image(point):
+        constrained_point = self.constrain_point_to_image(
+            point
+        )
+
+        self.selection_manager.preview_point_move(
+            index,
+            constrained_point,
+        )
+
+    def handle_move_finished(
+        self,
+        index: int,
+        old_point: QPointF,
+        new_point: QPointF,
+    ) -> None:
+        if self._updating_handles:
             return
 
-        self.selection_manager.update_point(
+        constrained_point = self.constrain_point_to_image(
+            new_point
+        )
+
+        self.selection_manager.commit_point_move(
             index,
-            point,
+            old_point,
+            constrained_point,
         )
 
     def sync_selection_graphics(
@@ -221,6 +272,7 @@ class ImageView(QGraphicsView):
                 index=index,
                 center=points[index],
                 moved_callback=self.handle_moved,
+                move_finished_callback=self.handle_move_finished,
             )
 
             self._selection_handles.append(handle)
@@ -262,19 +314,14 @@ class ImageView(QGraphicsView):
         if not self._has_image:
             return
 
-        zoom_in_factor = 1.25
-        zoom_out_factor = 1 / zoom_in_factor
-
-        if event.angleDelta().y() > 0:
-            zoom_factor = zoom_in_factor
-        else:
-            zoom_factor = zoom_out_factor
+        zoom_factor = (
+            1.25
+            if event.angleDelta().y() > 0
+            else 1 / 1.25
+        )
 
         current_scale = self.transform().m11()
         new_scale = current_scale * zoom_factor
 
-        minimum_scale = 0.05
-        maximum_scale = 20.0
-
-        if minimum_scale <= new_scale <= maximum_scale:
+        if 0.05 <= new_scale <= 20.0:
             self.scale(zoom_factor, zoom_factor)

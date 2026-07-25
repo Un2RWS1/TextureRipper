@@ -126,6 +126,96 @@ def extract_texture(
     )
 
     return extracted_texture
+def make_texture_seamless(
+    image_array: np.ndarray,
+    blend_fraction: float = 0.10,
+) -> np.ndarray:
+    """
+    Blend opposite edges so the texture tiles more smoothly.
+
+    The source array is not modified.
+    """
+
+    if image_array.ndim != 3:
+        raise ValueError(
+            "The texture must be a color image."
+        )
+
+    if not 0.0 < blend_fraction <= 0.5:
+        raise ValueError(
+            "Blend fraction must be between 0 and 0.5."
+        )
+
+    result = image_array.astype(np.float32).copy()
+
+    height, width, _ = result.shape
+
+    horizontal_blend = max(
+        1,
+        int(round(width * blend_fraction)),
+    )
+    vertical_blend = max(
+        1,
+        int(round(height * blend_fraction)),
+    )
+
+    original = result.copy()
+
+    # Blend the left and right edges toward their shared average.
+    for offset in range(horizontal_blend):
+        left_index = offset
+        right_index = width - 1 - offset
+
+        strength = 1.0 - (
+            offset / max(horizontal_blend - 1, 1)
+        )
+
+        left_pixels = original[:, left_index, :]
+        right_pixels = original[:, right_index, :]
+
+        average_pixels = (
+            left_pixels + right_pixels
+        ) * 0.5
+
+        result[:, left_index, :] = (
+            left_pixels * (1.0 - strength)
+            + average_pixels * strength
+        )
+
+        result[:, right_index, :] = (
+            right_pixels * (1.0 - strength)
+            + average_pixels * strength
+        )
+
+    original = result.copy()
+
+    # Blend the top and bottom edges toward their shared average.
+    for offset in range(vertical_blend):
+        top_index = offset
+        bottom_index = height - 1 - offset
+
+        strength = 1.0 - (
+            offset / max(vertical_blend - 1, 1)
+        )
+
+        top_pixels = original[top_index, :, :]
+        bottom_pixels = original[bottom_index, :, :]
+
+        average_pixels = (
+            top_pixels + bottom_pixels
+        ) * 0.5
+
+        result[top_index, :, :] = (
+            top_pixels * (1.0 - strength)
+            + average_pixels * strength
+        )
+
+        result[bottom_index, :, :] = (
+            bottom_pixels * (1.0 - strength)
+            + average_pixels * strength
+        )
+
+    return np.clip(result, 0, 255).astype(np.uint8)
 
 
 def rgba_array_to_qpixmap(
