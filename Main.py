@@ -7,6 +7,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -17,19 +18,18 @@ from PySide6.QtWidgets import (
     QToolBar,
     QVBoxLayout,
     QWidget,
-    QCheckBox,
 )
 
+from adjustments_panel import AdjustmentsPanel
 from image_view import ImageView
 from live_preview_panel import LivePreviewPanel
+from texture_adjustments import apply_texture_adjustments
 from texture_preview import TexturePreviewDialog
 from texture_processing import (
     extract_texture,
     make_texture_seamless,
     rgba_array_to_qpixmap,
 )
-from adjustments_panel import AdjustmentsPanel
-from texture_adjustments import apply_texture_adjustments
 
 
 class TextureRipperWindow(QMainWindow):
@@ -37,26 +37,30 @@ class TextureRipperWindow(QMainWindow):
         super().__init__()
 
         self.setWindowTitle("Texture Ripper")
-        self.resize(1400, 850)
+        self.resize(1500, 900)
 
         self.current_texture_array = None
 
-        # Main image editor
         self.image_view = ImageView()
 
-        # Live texture preview panel
         self.live_preview_panel = LivePreviewPanel()
         self.live_preview_panel.seamless_changed.connect(
             self.on_seamless_changed
         )
 
-        self.adjustments_panel = AdjustmentsPanel()
+        # Use the same undo stack as the selection system.
+        self.adjustments_panel = AdjustmentsPanel(
+            undo_stack=(
+                self.image_view
+                .selection_manager
+                .undo_stack
+            )
+        )
 
         self.adjustments_panel.adjustments_changed.connect(
             self.on_adjustments_changed
         )
 
-        # Delay live-preview regeneration slightly while dragging.
         self.preview_timer = QTimer(self)
         self.preview_timer.setSingleShot(True)
         self.preview_timer.setInterval(80)
@@ -64,7 +68,6 @@ class TextureRipperWindow(QMainWindow):
             self.update_live_preview
         )
 
-        # Selection signals
         self.image_view.selection_manager.selection_changed.connect(
             self.on_selection_changed
         )
@@ -73,21 +76,30 @@ class TextureRipperWindow(QMainWindow):
             self.on_selection_completed
         )
 
-        # Main controls
-        self.open_button = QPushButton("Open Image")
-        self.open_button.clicked.connect(self.open_image)
+        self.open_button = QPushButton(
+            "Open Image"
+        )
+        self.open_button.clicked.connect(
+            self.open_image
+        )
 
-        self.fit_button = QPushButton("Fit Image")
+        self.fit_button = QPushButton(
+            "Fit Image"
+        )
         self.fit_button.clicked.connect(
             self.image_view.fit_image_to_window
         )
 
-        self.select_button = QPushButton("Select Surface")
+        self.select_button = QPushButton(
+            "Select Surface"
+        )
         self.select_button.clicked.connect(
             self.start_selection
         )
 
-        self.clear_button = QPushButton("Clear Selection")
+        self.clear_button = QPushButton(
+            "Clear Selection"
+        )
         self.clear_button.clicked.connect(
             self.image_view.clear_selection
         )
@@ -95,21 +107,18 @@ class TextureRipperWindow(QMainWindow):
         self.edge_snap_checkbox = QCheckBox(
             "Edge Snapping"
         )
-
-        self.edge_snap_checkbox.setChecked(
-            False
-        )
-
+        self.edge_snap_checkbox.setChecked(False)
         self.edge_snap_checkbox.setToolTip(
             "Snap dragged selection corners "
-            "to nearby image edges."
+            "to nearby detected image edges."
         )
-
         self.edge_snap_checkbox.toggled.connect(
             self.on_edge_snapping_changed
         )
 
-        self.extract_button = QPushButton("Open Full Preview")
+        self.extract_button = QPushButton(
+            "Open Full Preview"
+        )
         self.extract_button.clicked.connect(
             self.open_full_preview
         )
@@ -119,108 +128,193 @@ class TextureRipperWindow(QMainWindow):
             "Selection: 0 / 4 points"
         )
 
-        # Top control row
         controls_layout = QHBoxLayout()
-        controls_layout.addWidget(self.open_button)
-        controls_layout.addWidget(self.fit_button)
-        controls_layout.addWidget(self.select_button)
-        controls_layout.addWidget(self.clear_button)
+        controls_layout.addWidget(
+            self.open_button
+        )
+        controls_layout.addWidget(
+            self.fit_button
+        )
+        controls_layout.addWidget(
+            self.select_button
+        )
+        controls_layout.addWidget(
+            self.clear_button
+        )
         controls_layout.addWidget(
             self.edge_snap_checkbox
         )
-        controls_layout.addWidget(self.extract_button)
-        controls_layout.addStretch()
-        controls_layout.addWidget(self.selection_status)
-
-        # Left-side editor container
-        editor_widget = QWidget()
-        editor_layout = QVBoxLayout()
-        editor_layout.setContentsMargins(0, 0, 0, 0)
-        editor_layout.addWidget(self.image_view)
-        editor_widget.setLayout(editor_layout)
-
-        # Resizable editor/preview divider
-        self.main_splitter = QSplitter(
-            Qt.Orientation.Horizontal
+        controls_layout.addWidget(
+            self.extract_button
         )
+        controls_layout.addStretch()
+        controls_layout.addWidget(
+            self.selection_status
+        )
+
+        editor_widget = QWidget()
+
+        editor_layout = QVBoxLayout()
+        editor_layout.setContentsMargins(
+            0,
+            0,
+            0,
+            0,
+        )
+        editor_layout.addWidget(
+            self.image_view
+        )
+
+        editor_widget.setLayout(
+            editor_layout
+        )
+
         right_panel = QWidget()
 
         right_layout = QVBoxLayout()
-        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setContentsMargins(
+            0,
+            0,
+            0,
+            0,
+        )
+        right_layout.setSpacing(6)
 
         right_layout.addWidget(
             self.live_preview_panel,
             3,
         )
-
         right_layout.addWidget(
             self.adjustments_panel,
             2,
         )
 
-        right_panel.setLayout(right_layout)
+        right_panel.setLayout(
+            right_layout
+        )
 
-        self.main_splitter.addWidget(editor_widget)
-        self.main_splitter.addWidget(right_panel)
+        self.main_splitter = QSplitter(
+            Qt.Orientation.Horizontal
+        )
 
-        self.main_splitter.setStretchFactor(0, 4)
-        self.main_splitter.setStretchFactor(1, 1)
-        self.main_splitter.setSizes([1050, 350])
-        self.main_splitter.setChildrenCollapsible(False)
+        self.main_splitter.addWidget(
+            editor_widget
+        )
+        self.main_splitter.addWidget(
+            right_panel
+        )
 
-        # Main window layout
+        self.main_splitter.setStretchFactor(
+            0,
+            4,
+        )
+        self.main_splitter.setStretchFactor(
+            1,
+            1,
+        )
+        self.main_splitter.setSizes(
+            [1100, 400]
+        )
+        self.main_splitter.setChildrenCollapsible(
+            False
+        )
+
         main_layout = QVBoxLayout()
-        main_layout.addLayout(controls_layout)
-        main_layout.addWidget(self.main_splitter, 1)
+        main_layout.addLayout(
+            controls_layout
+        )
+        main_layout.addWidget(
+            self.main_splitter,
+            1,
+        )
 
         central_widget = QWidget()
-        central_widget.setLayout(main_layout)
+        central_widget.setLayout(
+            main_layout
+        )
 
-        self.setCentralWidget(central_widget)
+        self.setCentralWidget(
+            central_widget
+        )
 
         self.create_menu()
         self.create_toolbar()
 
-        self.statusBar().showMessage("Ready")
+        self.statusBar().showMessage(
+            "Ready"
+        )
 
     def create_menu(self) -> None:
-        # File menu
-        file_menu = self.menuBar().addMenu("&File")
+        file_menu = self.menuBar().addMenu(
+            "&File"
+        )
 
-        open_action = QAction("&Open Image", self)
-        open_action.setShortcut("Ctrl+O")
-        open_action.triggered.connect(self.open_image)
-        file_menu.addAction(open_action)
+        open_action = QAction(
+            "&Open Image",
+            self,
+        )
+        open_action.setShortcut(
+            "Ctrl+O"
+        )
+        open_action.triggered.connect(
+            self.open_image
+        )
+        file_menu.addAction(
+            open_action
+        )
 
         file_menu.addSeparator()
 
-        exit_action = QAction("E&xit", self)
-        exit_action.setShortcut("Ctrl+Q")
-        exit_action.triggered.connect(self.close)
-        file_menu.addAction(exit_action)
+        exit_action = QAction(
+            "E&xit",
+            self,
+        )
+        exit_action.setShortcut(
+            "Ctrl+Q"
+        )
+        exit_action.triggered.connect(
+            self.close
+        )
+        file_menu.addAction(
+            exit_action
+        )
 
-        # Edit menu
-        edit_menu = self.menuBar().addMenu("&Edit")
+        edit_menu = self.menuBar().addMenu(
+            "&Edit"
+        )
 
         undo_action = (
-            self.image_view.selection_manager.undo_stack.createUndoAction(
+            self.image_view
+            .selection_manager
+            .undo_stack
+            .createUndoAction(
                 self,
                 "&Undo",
             )
         )
-        undo_action.setShortcut("Ctrl+Z")
-        edit_menu.addAction(undo_action)
+        undo_action.setShortcut(
+            "Ctrl+Z"
+        )
+        edit_menu.addAction(
+            undo_action
+        )
 
         redo_action = (
-            self.image_view.selection_manager.undo_stack.createRedoAction(
+            self.image_view
+            .selection_manager
+            .undo_stack
+            .createRedoAction(
                 self,
                 "&Redo",
             )
         )
-        redo_action.setShortcut("Ctrl+Shift+Z")
-        edit_menu.addAction(redo_action)
+        redo_action.setShortcut(
+            "Ctrl+Shift+Z"
+        )
+        edit_menu.addAction(
+            redo_action
+        )
 
-        # Selection menu
         selection_menu = self.menuBar().addMenu(
             "&Selection"
         )
@@ -229,21 +323,29 @@ class TextureRipperWindow(QMainWindow):
             "&Select Surface",
             self,
         )
-        select_action.setShortcut("S")
+        select_action.setShortcut(
+            "S"
+        )
         select_action.triggered.connect(
             self.start_selection
         )
-        selection_menu.addAction(select_action)
+        selection_menu.addAction(
+            select_action
+        )
 
         clear_action = QAction(
             "&Clear Selection",
             self,
         )
-        clear_action.setShortcut("Escape")
+        clear_action.setShortcut(
+            "Escape"
+        )
         clear_action.triggered.connect(
             self.image_view.clear_selection
         )
-        selection_menu.addAction(clear_action)
+        selection_menu.addAction(
+            clear_action
+        )
 
         selection_menu.addSeparator()
 
@@ -251,75 +353,128 @@ class TextureRipperWindow(QMainWindow):
             "Open &Full Preview",
             self,
         )
-        preview_action.setShortcut("Ctrl+E")
+        preview_action.setShortcut(
+            "Ctrl+E"
+        )
         preview_action.triggered.connect(
             self.open_full_preview
         )
-        selection_menu.addAction(preview_action)
+        selection_menu.addAction(
+            preview_action
+        )
 
-        # View menu
-        view_menu = self.menuBar().addMenu("&View")
+        view_menu = self.menuBar().addMenu(
+            "&View"
+        )
 
-        fit_action = QAction("&Fit Image", self)
-        fit_action.setShortcut("F")
+        fit_action = QAction(
+            "&Fit Image",
+            self,
+        )
+        fit_action.setShortcut(
+            "F"
+        )
         fit_action.triggered.connect(
             self.image_view.fit_image_to_window
         )
-        view_menu.addAction(fit_action)
+        view_menu.addAction(
+            fit_action
+        )
 
     def create_toolbar(self) -> None:
-        toolbar = QToolBar("Main Toolbar")
+        toolbar = QToolBar(
+            "Main Toolbar"
+        )
         toolbar.setMovable(False)
 
-        self.addToolBar(toolbar)
+        self.addToolBar(
+            toolbar
+        )
 
-        open_action = QAction("Open", self)
-        open_action.triggered.connect(self.open_image)
-        toolbar.addAction(open_action)
+        open_action = QAction(
+            "Open",
+            self,
+        )
+        open_action.triggered.connect(
+            self.open_image
+        )
+        toolbar.addAction(
+            open_action
+        )
 
         toolbar.addSeparator()
 
         undo_action = (
-            self.image_view.selection_manager.undo_stack.createUndoAction(
+            self.image_view
+            .selection_manager
+            .undo_stack
+            .createUndoAction(
                 self,
                 "Undo",
             )
         )
-        toolbar.addAction(undo_action)
+        toolbar.addAction(
+            undo_action
+        )
 
         redo_action = (
-            self.image_view.selection_manager.undo_stack.createRedoAction(
+            self.image_view
+            .selection_manager
+            .undo_stack
+            .createRedoAction(
                 self,
                 "Redo",
             )
         )
-        toolbar.addAction(redo_action)
+        toolbar.addAction(
+            redo_action
+        )
 
         toolbar.addSeparator()
 
-        select_action = QAction("Select", self)
+        select_action = QAction(
+            "Select",
+            self,
+        )
         select_action.triggered.connect(
             self.start_selection
         )
-        toolbar.addAction(select_action)
+        toolbar.addAction(
+            select_action
+        )
 
-        clear_action = QAction("Clear", self)
+        clear_action = QAction(
+            "Clear",
+            self,
+        )
         clear_action.triggered.connect(
             self.image_view.clear_selection
         )
-        toolbar.addAction(clear_action)
+        toolbar.addAction(
+            clear_action
+        )
 
-        preview_action = QAction("Full Preview", self)
+        preview_action = QAction(
+            "Full Preview",
+            self,
+        )
         preview_action.triggered.connect(
             self.open_full_preview
         )
-        toolbar.addAction(preview_action)
+        toolbar.addAction(
+            preview_action
+        )
 
-        fit_action = QAction("Fit", self)
+        fit_action = QAction(
+            "Fit",
+            self,
+        )
         fit_action.triggered.connect(
             self.image_view.fit_image_to_window
         )
-        toolbar.addAction(fit_action)
+        toolbar.addAction(
+            fit_action
+        )
 
     def open_image(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
@@ -336,7 +491,9 @@ class TextureRipperWindow(QMainWindow):
         if not file_path:
             return
 
-        pixmap = QPixmap(file_path)
+        pixmap = QPixmap(
+            file_path
+        )
 
         if pixmap.isNull():
             QMessageBox.warning(
@@ -348,16 +505,22 @@ class TextureRipperWindow(QMainWindow):
 
         self.preview_timer.stop()
         self.current_texture_array = None
+
         self.live_preview_panel.clear_texture()
+        self.image_view.set_image(
+            pixmap
+        )
 
-        self.image_view.set_image(pixmap)
+        filename = Path(
+            file_path
+        ).name
 
-        filename = Path(file_path).name
         width = pixmap.width()
         height = pixmap.height()
 
         self.statusBar().showMessage(
-            f"Opened {filename} - {width} x {height} pixels"
+            f"Opened {filename} - "
+            f"{width} x {height} pixels"
         )
 
     def start_selection(self) -> None:
@@ -371,34 +534,47 @@ class TextureRipperWindow(QMainWindow):
 
         self.preview_timer.stop()
         self.current_texture_array = None
+
         self.live_preview_panel.clear_texture()
 
         self.image_view.clear_selection()
-        self.image_view.set_selection_mode(True)
+        self.image_view.set_selection_mode(
+            True
+        )
 
         self.statusBar().showMessage(
             "Click top-left, top-right, "
             "bottom-right, then bottom-left."
         )
 
-    def on_selection_changed(self, points: list) -> None:
-        point_count = len(points)
+    def on_selection_changed(
+        self,
+        points: list,
+    ) -> None:
+        point_count = len(
+            points
+        )
 
         self.selection_status.setText(
             f"Selection: {point_count} / 4 points"
         )
 
-        selection_complete = point_count == 4
+        selection_complete = (
+            point_count == 4
+        )
 
         self.extract_button.setEnabled(
             selection_complete
         )
 
         if point_count == 0:
-            self.image_view.set_selection_mode(False)
+            self.image_view.set_selection_mode(
+                False
+            )
 
             self.preview_timer.stop()
             self.current_texture_array = None
+
             self.live_preview_panel.clear_texture()
 
             self.statusBar().showMessage(
@@ -406,39 +582,66 @@ class TextureRipperWindow(QMainWindow):
             )
 
         elif point_count < 4:
-            # This also handles undoing one or more selection points.
-            self.image_view.set_selection_mode(True)
+            self.image_view.set_selection_mode(
+                True
+            )
 
             self.preview_timer.stop()
             self.current_texture_array = None
+
             self.live_preview_panel.clear_texture()
 
             self.statusBar().showMessage(
-                f"Selection point {point_count} of 4 placed. "
+                f"Selection point {point_count} "
+                "of 4 placed. "
                 "Click to place the next point."
             )
 
         else:
-            # This also handles redoing the fourth point.
-            self.image_view.set_selection_mode(False)
+            self.image_view.set_selection_mode(
+                False
+            )
 
-            # Restarting the timer debounces live-preview updates
-            # while a selection handle is being dragged.
             self.preview_timer.start()
 
-    def on_selection_completed(self, points: list) -> None:
-        self.image_view.set_selection_mode(False)
+    def on_selection_completed(
+        self,
+        points: list,
+    ) -> None:
+        self.image_view.set_selection_mode(
+            False
+        )
 
         self.statusBar().showMessage(
-            "Selection complete. Adjust the handles while "
-            "watching the live preview."
+            "Selection complete. Adjust the handles "
+            "while watching the live preview."
         )
 
         self.update_live_preview(
             fit_image=True
         )
 
-    def on_seamless_changed(self, enabled: bool) -> None:
+    def on_edge_snapping_changed(
+        self,
+        enabled: bool,
+    ) -> None:
+        self.image_view.set_edge_snapping_enabled(
+            enabled
+        )
+
+        if enabled:
+            self.statusBar().showMessage(
+                "Edge snapping enabled."
+            )
+        else:
+            self.statusBar().showMessage(
+                "Edge snapping disabled."
+            )
+
+    def on_seamless_changed(
+        self,
+        enabled: bool,
+    ) -> None:
         if len(
             self.image_view.get_selection_points()
         ) == 4:
@@ -454,48 +657,35 @@ class TextureRipperWindow(QMainWindow):
             self.statusBar().showMessage(
                 "Seamless mode disabled."
             )
+
     def on_adjustments_changed(self) -> None:
         if len(
             self.image_view.get_selection_points()
         ) != 4:
             return
 
-        # Use the existing debounce timer so rapidly moving
-        # a slider does not process every intermediate value.
         self.preview_timer.start()
 
         self.statusBar().showMessage(
             "Updating texture adjustments..."
         )
 
-    def on_edge_snapping_changed(
-        self,
-        enabled: bool,
-    ) -> None:
-        self.image_view.set_edge_snapping_enabled(
-            enabled
-        )
-
-        if enabled:
-            self.statusBar().showMessage(
-                "Edge snapping enabled. "
-                "Drag a corner near a visible edge."
-            )
-        else:
-            self.statusBar().showMessage(
-                "Edge snapping disabled."
-            )
-
     def update_live_preview(
         self,
         fit_image: bool = False,
     ) -> None:
-        points = self.image_view.get_selection_points()
+        points = (
+            self.image_view
+            .get_selection_points()
+        )
 
         if len(points) != 4:
             return
 
-        source_pixmap = self.image_view.get_image()
+        source_pixmap = (
+            self.image_view
+            .get_image()
+        )
 
         if source_pixmap.isNull():
             return
@@ -507,7 +697,8 @@ class TextureRipperWindow(QMainWindow):
             )
 
             adjustment_settings = (
-                self.adjustments_panel.get_settings()
+                self.adjustments_panel
+                .get_settings()
             )
 
             texture_array = apply_texture_adjustments(
@@ -515,7 +706,10 @@ class TextureRipperWindow(QMainWindow):
                 **adjustment_settings,
             )
 
-            if self.live_preview_panel.seamless_enabled():
+            if (
+                self.live_preview_panel
+                .seamless_enabled()
+            ):
                 texture_array = make_texture_seamless(
                     texture_array,
                     blend_fraction=0.10,
@@ -540,8 +734,15 @@ class TextureRipperWindow(QMainWindow):
             fit_image=fit_image,
         )
 
+        self.statusBar().showMessage(
+            "Texture preview updated."
+        )
+
     def open_full_preview(self) -> None:
-        points = self.image_view.get_selection_points()
+        points = (
+            self.image_view
+            .get_selection_points()
+        )
 
         if len(points) != 4:
             QMessageBox.information(
@@ -551,8 +752,6 @@ class TextureRipperWindow(QMainWindow):
             )
             return
 
-        # Always regenerate the final preview from the latest
-        # corner locations and seamless setting.
         self.update_live_preview(
             fit_image=False
         )
@@ -574,12 +773,16 @@ class TextureRipperWindow(QMainWindow):
 
 
 def main() -> None:
-    app = QApplication(sys.argv)
+    app = QApplication(
+        sys.argv
+    )
 
     window = TextureRipperWindow()
     window.show()
 
-    sys.exit(app.exec())
+    sys.exit(
+        app.exec()
+    )
 
 
 if __name__ == "__main__":
