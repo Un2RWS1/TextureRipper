@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QToolBar,
     QVBoxLayout,
     QWidget,
+    QCheckBox,
 )
 
 from image_view import ImageView
@@ -83,6 +84,23 @@ class TextureRipperWindow(QMainWindow):
             self.image_view.clear_selection
         )
 
+        self.edge_snap_checkbox = QCheckBox(
+            "Edge Snapping"
+        )
+
+        self.edge_snap_checkbox.setChecked(
+            False
+        )
+
+        self.edge_snap_checkbox.setToolTip(
+            "Snap dragged selection corners "
+            "to nearby image edges."
+        )
+
+        self.edge_snap_checkbox.toggled.connect(
+            self.on_edge_snapping_changed
+        )
+
         self.extract_button = QPushButton("Open Full Preview")
         self.extract_button.clicked.connect(
             self.open_full_preview
@@ -99,6 +117,9 @@ class TextureRipperWindow(QMainWindow):
         controls_layout.addWidget(self.fit_button)
         controls_layout.addWidget(self.select_button)
         controls_layout.addWidget(self.clear_button)
+        controls_layout.addWidget(
+            self.edge_snap_checkbox
+        )
         controls_layout.addWidget(self.extract_button)
         controls_layout.addStretch()
         controls_layout.addWidget(self.selection_status)
@@ -409,6 +430,23 @@ class TextureRipperWindow(QMainWindow):
         else:
             self.statusBar().showMessage(
                 "Seamless mode disabled."
+            )
+    def on_edge_snapping_changed(
+        self,
+        enabled: bool,
+    ) -> None:
+        self.image_view.set_edge_snapping_enabled(
+            enabled
+        )
+
+        if enabled:
+            self.statusBar().showMessage(
+                "Edge snapping enabled. "
+                "Drag a corner near a visible edge."
+            )
+        else:
+            self.statusBar().showMessage(
+                "Edge snapping disabled."
             )
 
     def update_live_preview(

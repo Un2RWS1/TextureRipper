@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QLabel,
 )
 
+from edge_snapper import EdgeSnapper
 from selection_manager import SelectionManager
 
 
@@ -41,7 +42,6 @@ class SelectionHandle(QGraphicsEllipseItem):
         )
 
         self.index = index
-
         self.moved_callback = moved_callback
         self.move_started_callback = move_started_callback
         self.move_finished_callback = move_finished_callback
@@ -49,49 +49,34 @@ class SelectionHandle(QGraphicsEllipseItem):
         self.drag_start_position = QPointF(center)
 
         self.setPos(center)
-
-        self.setBrush(
-            QBrush(QColor(255, 170, 0))
-        )
-
-        self.setPen(
-            QPen(QColor(255, 255, 255), 2)
-        )
+        self.setBrush(QBrush(QColor(255, 170, 0)))
+        self.setPen(QPen(QColor(255, 255, 255), 2))
 
         self.setFlag(
             QGraphicsItem.GraphicsItemFlag.ItemIsMovable,
             True,
         )
-
         self.setFlag(
             QGraphicsItem.GraphicsItemFlag.ItemIsSelectable,
             True,
         )
-
         self.setFlag(
             QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges,
             True,
         )
-
-        # Keep the handle visually the same size while zooming.
         self.setFlag(
             QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations,
             True,
         )
 
-        self.setCursor(
-            Qt.CursorShape.CrossCursor
-        )
-
+        self.setCursor(Qt.CursorShape.CrossCursor)
         self.setZValue(3)
 
     def mousePressEvent(
         self,
         event: QGraphicsSceneMouseEvent,
     ) -> None:
-        self.drag_start_position = QPointF(
-            self.pos()
-        )
+        self.drag_start_position = QPointF(self.pos())
 
         if self.move_started_callback is not None:
             self.move_started_callback(
@@ -125,10 +110,7 @@ class SelectionHandle(QGraphicsEllipseItem):
                     QPointF(self.pos()),
                 )
 
-        return super().itemChange(
-            change,
-            value,
-        )
+        return super().itemChange(change, value)
 
 
 class ImageView(QGraphicsView):
@@ -139,9 +121,10 @@ class ImageView(QGraphicsView):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
 
-        self.selection_manager = SelectionManager(
-            self
-        )
+        self.selection_manager = SelectionManager(self)
+
+        self.edge_snapper = EdgeSnapper()
+        self._edge_snapping_enabled = False
 
         self._scene = QGraphicsScene(self)
         self.setScene(self._scene)
@@ -149,26 +132,17 @@ class ImageView(QGraphicsView):
         self._image_item = QGraphicsPixmapItem()
         self._scene.addItem(self._image_item)
 
-        self._selection_polygon = (
-            QGraphicsPolygonItem()
-        )
-
+        self._selection_polygon = QGraphicsPolygonItem()
         self._selection_polygon.setPen(
             QPen(QColor(0, 220, 255), 3)
         )
-
         self._selection_polygon.setBrush(
             QBrush(QColor(0, 220, 255, 45))
         )
-
         self._selection_polygon.setZValue(2)
-        self._scene.addItem(
-            self._selection_polygon
-        )
+        self._scene.addItem(self._selection_polygon)
 
-        self._selection_handles: list[
-            SelectionHandle
-        ] = []
+        self._selection_handles: list[SelectionHandle] = []
 
         self._has_image = False
         self._selection_mode = False
@@ -189,37 +163,25 @@ class ImageView(QGraphicsView):
         self.setTransformationAnchor(
             QGraphicsView.ViewportAnchor.AnchorUnderMouse
         )
-
         self.setResizeAnchor(
             QGraphicsView.ViewportAnchor.AnchorViewCenter
         )
 
-        self.setBackgroundBrush(
-            QColor(45, 45, 45)
-        )
-
+        self.setBackgroundBrush(QColor(45, 45, 45))
         self.setDragMode(
             QGraphicsView.DragMode.ScrollHandDrag
         )
 
     def create_magnifier(self) -> None:
-        """
-        Create a floating image magnifier inside the viewport.
-        """
-
-        self.magnifier_label = QLabel(
-            self.viewport()
-        )
+        self.magnifier_label = QLabel(self.viewport())
 
         self.magnifier_label.setFixedSize(
             self.MAGNIFIER_SIZE,
             self.MAGNIFIER_SIZE,
         )
-
         self.magnifier_label.setAlignment(
             Qt.AlignmentFlag.AlignCenter
         )
-
         self.magnifier_label.setStyleSheet(
             """
             QLabel {
@@ -230,7 +192,6 @@ class ImageView(QGraphicsView):
             """
         )
 
-        # The magnifier should not intercept mouse input.
         self.magnifier_label.setAttribute(
             Qt.WidgetAttribute.WA_TransparentForMouseEvents,
             True,
@@ -240,11 +201,6 @@ class ImageView(QGraphicsView):
         self.position_magnifier()
 
     def position_magnifier(self) -> None:
-        """
-        Keep the magnifier in the top-right corner
-        of the image viewport.
-        """
-
         viewport_width = self.viewport().width()
 
         x_position = (
@@ -253,11 +209,9 @@ class ImageView(QGraphicsView):
             - self.MAGNIFIER_MARGIN
         )
 
-        y_position = self.MAGNIFIER_MARGIN
-
         self.magnifier_label.move(
             max(self.MAGNIFIER_MARGIN, x_position),
-            y_position,
+            self.MAGNIFIER_MARGIN,
         )
 
     def show_magnifier(
@@ -265,10 +219,7 @@ class ImageView(QGraphicsView):
         scene_position: QPointF,
     ) -> None:
         self._dragging_handle = True
-
-        self.update_magnifier(
-            scene_position
-        )
+        self.update_magnifier(scene_position)
 
         self.magnifier_label.show()
         self.magnifier_label.raise_()
@@ -281,33 +232,21 @@ class ImageView(QGraphicsView):
         self,
         scene_position: QPointF,
     ) -> None:
-        """
-        Crop a small region around the selected image
-        coordinate and enlarge it inside the overlay.
-        """
-
         source_pixmap = self.get_image()
 
         if source_pixmap.isNull():
             self.hide_magnifier()
             return
 
-        constrained_position = (
-            self.constrain_point_to_image(
-                scene_position
-            )
+        constrained_position = self.constrain_point_to_image(
+            scene_position
         )
 
         source_size = self.MAGNIFIER_SOURCE_SIZE
         half_source_size = source_size // 2
 
-        center_x = int(
-            round(constrained_position.x())
-        )
-
-        center_y = int(
-            round(constrained_position.y())
-        )
+        center_x = int(round(constrained_position.x()))
+        center_y = int(round(constrained_position.y()))
 
         source_x = center_x - half_source_size
         source_y = center_y - half_source_size
@@ -316,7 +255,6 @@ class ImageView(QGraphicsView):
             0,
             source_pixmap.width() - source_size,
         )
-
         maximum_y = max(
             0,
             source_pixmap.height() - source_size,
@@ -326,7 +264,6 @@ class ImageView(QGraphicsView):
             0,
             min(source_x, maximum_x),
         )
-
         source_y = max(
             0,
             min(source_y, maximum_y),
@@ -346,8 +283,6 @@ class ImageView(QGraphicsView):
         if cropped_pixmap.isNull():
             return
 
-        # FastTransformation intentionally preserves a
-        # crisp, pixel-magnified appearance.
         magnified_pixmap = cropped_pixmap.scaled(
             self.MAGNIFIER_SIZE,
             self.MAGNIFIER_SIZE,
@@ -371,16 +306,10 @@ class ImageView(QGraphicsView):
         image_position: QPointF,
         source_rectangle: QRect,
     ) -> None:
-        """
-        Draw a crosshair corresponding to the exact
-        selected point within the cropped region.
-        """
-
         crop_width = max(
             source_rectangle.width(),
             1,
         )
-
         crop_height = max(
             source_rectangle.height(),
             1,
@@ -390,7 +319,6 @@ class ImageView(QGraphicsView):
             image_position.x()
             - source_rectangle.left()
         )
-
         relative_y = (
             image_position.y()
             - source_rectangle.top()
@@ -403,7 +331,6 @@ class ImageView(QGraphicsView):
                 * self.MAGNIFIER_SIZE
             )
         )
-
         crosshair_y = int(
             round(
                 relative_y
@@ -419,7 +346,6 @@ class ImageView(QGraphicsView):
                 self.MAGNIFIER_SIZE - 1,
             ),
         )
-
         crosshair_y = max(
             0,
             min(
@@ -428,25 +354,17 @@ class ImageView(QGraphicsView):
             ),
         )
 
-        painter = QPainter(
-            magnified_pixmap
-        )
+        painter = QPainter(magnified_pixmap)
 
-        # Dark outline improves visibility over bright areas.
         painter.setPen(
-            QPen(
-                QColor(0, 0, 0),
-                5,
-            )
+            QPen(QColor(0, 0, 0), 5)
         )
-
         painter.drawLine(
             crosshair_x,
             0,
             crosshair_x,
             self.MAGNIFIER_SIZE,
         )
-
         painter.drawLine(
             0,
             crosshair_y,
@@ -455,19 +373,14 @@ class ImageView(QGraphicsView):
         )
 
         painter.setPen(
-            QPen(
-                QColor(255, 255, 255),
-                2,
-            )
+            QPen(QColor(255, 255, 255), 2)
         )
-
         painter.drawLine(
             crosshair_x,
             0,
             crosshair_x,
             self.MAGNIFIER_SIZE,
         )
-
         painter.drawLine(
             0,
             crosshair_y,
@@ -476,16 +389,9 @@ class ImageView(QGraphicsView):
         )
 
         painter.setPen(
-            QPen(
-                QColor(255, 80, 80),
-                2,
-            )
+            QPen(QColor(255, 80, 80), 2)
         )
-
-        painter.setBrush(
-            Qt.BrushStyle.NoBrush
-        )
-
+        painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawEllipse(
             crosshair_x - 7,
             crosshair_y - 7,
@@ -501,9 +407,8 @@ class ImageView(QGraphicsView):
 
         self.selection_manager.reset()
 
-        self._image_item.setPixmap(
-            pixmap
-        )
+        self._image_item.setPixmap(pixmap)
+        self.edge_snapper.set_image(pixmap)
 
         self._scene.setSceneRect(
             self._image_item.boundingRect()
@@ -525,6 +430,50 @@ class ImageView(QGraphicsView):
     ) -> list[QPointF]:
         return self.selection_manager.get_points()
 
+    def set_edge_snapping_enabled(
+        self,
+        enabled: bool,
+    ) -> None:
+        self._edge_snapping_enabled = enabled
+
+    def edge_snapping_enabled(self) -> bool:
+        return self._edge_snapping_enabled
+
+    def get_edge_snap_radius(self) -> int:
+        current_scale = self.transform().m11()
+
+        if current_scale <= 0:
+            return 12
+
+        radius = int(
+            round(14 / current_scale)
+        )
+
+        return max(
+            3,
+            min(radius, 50),
+        )
+
+    def apply_edge_snapping(
+        self,
+        point: QPointF,
+    ) -> QPointF:
+        constrained_point = self.constrain_point_to_image(
+            point
+        )
+
+        if not self._edge_snapping_enabled:
+            return constrained_point
+
+        snapped_point = self.edge_snapper.snap(
+            constrained_point,
+            self.get_edge_snap_radius(),
+        )
+
+        return self.constrain_point_to_image(
+            snapped_point
+        )
+
     def set_selection_mode(
         self,
         enabled: bool,
@@ -535,7 +484,6 @@ class ImageView(QGraphicsView):
             self.setDragMode(
                 QGraphicsView.DragMode.NoDrag
             )
-
             self.setCursor(
                 Qt.CursorShape.CrossCursor
             )
@@ -543,13 +491,11 @@ class ImageView(QGraphicsView):
             self.setDragMode(
                 QGraphicsView.DragMode.ScrollHandDrag
             )
-
             self.unsetCursor()
 
     def clear_selection(self) -> None:
         self.hide_magnifier()
         self.set_selection_mode(False)
-
         self.selection_manager.clear()
 
     def fit_image_to_window(self) -> None:
@@ -599,9 +545,11 @@ class ImageView(QGraphicsView):
         index: int,
         point: QPointF,
     ) -> None:
-        self.show_magnifier(
+        snapped_point = self.apply_edge_snapping(
             point
         )
+
+        self.show_magnifier(snapped_point)
 
     def handle_moved(
         self,
@@ -611,10 +559,8 @@ class ImageView(QGraphicsView):
         if self._updating_handles:
             return
 
-        constrained_point = (
-            self.constrain_point_to_image(
-                point
-            )
+        constrained_point = self.apply_edge_snapping(
+            point
         )
 
         self.selection_manager.preview_point_move(
@@ -636,10 +582,8 @@ class ImageView(QGraphicsView):
         if self._updating_handles:
             return
 
-        constrained_point = (
-            self.constrain_point_to_image(
-                new_point
-            )
+        constrained_point = self.apply_edge_snapping(
+            new_point
         )
 
         self.selection_manager.commit_point_move(
@@ -660,13 +604,8 @@ class ImageView(QGraphicsView):
             len(self._selection_handles)
             > len(points)
         ):
-            handle = (
-                self._selection_handles.pop()
-            )
-
-            self._scene.removeItem(
-                handle
-            )
+            handle = self._selection_handles.pop()
+            self._scene.removeItem(handle)
 
         while (
             len(self._selection_handles)
@@ -688,13 +627,8 @@ class ImageView(QGraphicsView):
                 ),
             )
 
-            self._selection_handles.append(
-                handle
-            )
-
-            self._scene.addItem(
-                handle
-            )
+            self._selection_handles.append(handle)
+            self._scene.addItem(handle)
 
         for index, point in enumerate(points):
             self._selection_handles[
@@ -725,10 +659,12 @@ class ImageView(QGraphicsView):
             ):
                 return
 
-            added = (
-                self.selection_manager.add_point(
-                    scene_position
-                )
+            selection_point = self.apply_edge_snapping(
+                scene_position
+            )
+
+            added = self.selection_manager.add_point(
+                selection_point
             )
 
             if (
@@ -754,13 +690,8 @@ class ImageView(QGraphicsView):
             else 1 / 1.25
         )
 
-        current_scale = (
-            self.transform().m11()
-        )
-
-        new_scale = (
-            current_scale * zoom_factor
-        )
+        current_scale = self.transform().m11()
+        new_scale = current_scale * zoom_factor
 
         if 0.05 <= new_scale <= 20.0:
             self.scale(
@@ -770,5 +701,4 @@ class ImageView(QGraphicsView):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-
         self.position_magnifier()
