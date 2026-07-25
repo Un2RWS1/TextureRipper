@@ -28,6 +28,8 @@ from texture_processing import (
     make_texture_seamless,
     rgba_array_to_qpixmap,
 )
+from adjustments_panel import AdjustmentsPanel
+from texture_adjustments import apply_texture_adjustments
 
 
 class TextureRipperWindow(QMainWindow):
@@ -46,6 +48,12 @@ class TextureRipperWindow(QMainWindow):
         self.live_preview_panel = LivePreviewPanel()
         self.live_preview_panel.seamless_changed.connect(
             self.on_seamless_changed
+        )
+
+        self.adjustments_panel = AdjustmentsPanel()
+
+        self.adjustments_panel.adjustments_changed.connect(
+            self.on_adjustments_changed
         )
 
         # Delay live-preview regeneration slightly while dragging.
@@ -135,10 +143,25 @@ class TextureRipperWindow(QMainWindow):
         self.main_splitter = QSplitter(
             Qt.Orientation.Horizontal
         )
-        self.main_splitter.addWidget(editor_widget)
-        self.main_splitter.addWidget(
-            self.live_preview_panel
+        right_panel = QWidget()
+
+        right_layout = QVBoxLayout()
+        right_layout.setContentsMargins(0, 0, 0, 0)
+
+        right_layout.addWidget(
+            self.live_preview_panel,
+            3,
         )
+
+        right_layout.addWidget(
+            self.adjustments_panel,
+            2,
+        )
+
+        right_panel.setLayout(right_layout)
+
+        self.main_splitter.addWidget(editor_widget)
+        self.main_splitter.addWidget(right_panel)
 
         self.main_splitter.setStretchFactor(0, 4)
         self.main_splitter.setStretchFactor(1, 1)
@@ -431,6 +454,20 @@ class TextureRipperWindow(QMainWindow):
             self.statusBar().showMessage(
                 "Seamless mode disabled."
             )
+    def on_adjustments_changed(self) -> None:
+        if len(
+            self.image_view.get_selection_points()
+        ) != 4:
+            return
+
+        # Use the existing debounce timer so rapidly moving
+        # a slider does not process every intermediate value.
+        self.preview_timer.start()
+
+        self.statusBar().showMessage(
+            "Updating texture adjustments..."
+        )
+
     def on_edge_snapping_changed(
         self,
         enabled: bool,
@@ -467,6 +504,15 @@ class TextureRipperWindow(QMainWindow):
             texture_array = extract_texture(
                 source_pixmap.toImage(),
                 points,
+            )
+
+            adjustment_settings = (
+                self.adjustments_panel.get_settings()
+            )
+
+            texture_array = apply_texture_adjustments(
+                texture_array,
+                **adjustment_settings,
             )
 
             if self.live_preview_panel.seamless_enabled():
