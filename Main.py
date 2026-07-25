@@ -47,8 +47,10 @@ class TextureRipperWindow(QMainWindow):
         self.live_preview_panel.seamless_changed.connect(
             self.on_seamless_changed
         )
+        self.live_preview_panel.seamless_strength_changed.connect(
+            self.on_seamless_strength_changed
+        )
 
-        # Use the same undo stack as the selection system.
         self.adjustments_panel = AdjustmentsPanel(
             undo_stack=(
                 self.image_view
@@ -56,7 +58,6 @@ class TextureRipperWindow(QMainWindow):
                 .undo_stack
             )
         )
-
         self.adjustments_panel.adjustments_changed.connect(
             self.on_adjustments_changed
         )
@@ -71,7 +72,6 @@ class TextureRipperWindow(QMainWindow):
         self.image_view.selection_manager.selection_changed.connect(
             self.on_selection_changed
         )
-
         self.image_view.selection_manager.selection_completed.connect(
             self.on_selection_completed
         )
@@ -515,12 +515,9 @@ class TextureRipperWindow(QMainWindow):
             file_path
         ).name
 
-        width = pixmap.width()
-        height = pixmap.height()
-
         self.statusBar().showMessage(
             f"Opened {filename} - "
-            f"{width} x {height} pixels"
+            f"{pixmap.width()} x {pixmap.height()} pixels"
         )
 
     def start_selection(self) -> None:
@@ -534,7 +531,6 @@ class TextureRipperWindow(QMainWindow):
 
         self.preview_timer.stop()
         self.current_texture_array = None
-
         self.live_preview_panel.clear_texture()
 
         self.image_view.clear_selection()
@@ -551,9 +547,7 @@ class TextureRipperWindow(QMainWindow):
         self,
         points: list,
     ) -> None:
-        point_count = len(
-            points
-        )
+        point_count = len(points)
 
         self.selection_status.setText(
             f"Selection: {point_count} / 4 points"
@@ -574,7 +568,6 @@ class TextureRipperWindow(QMainWindow):
 
             self.preview_timer.stop()
             self.current_texture_array = None
-
             self.live_preview_panel.clear_texture()
 
             self.statusBar().showMessage(
@@ -588,12 +581,10 @@ class TextureRipperWindow(QMainWindow):
 
             self.preview_timer.stop()
             self.current_texture_array = None
-
             self.live_preview_panel.clear_texture()
 
             self.statusBar().showMessage(
-                f"Selection point {point_count} "
-                "of 4 placed. "
+                f"Selection point {point_count} of 4 placed. "
                 "Click to place the next point."
             )
 
@@ -601,7 +592,6 @@ class TextureRipperWindow(QMainWindow):
             self.image_view.set_selection_mode(
                 False
             )
-
             self.preview_timer.start()
 
     def on_selection_completed(
@@ -629,14 +619,11 @@ class TextureRipperWindow(QMainWindow):
             enabled
         )
 
-        if enabled:
-            self.statusBar().showMessage(
-                "Edge snapping enabled."
-            )
-        else:
-            self.statusBar().showMessage(
-                "Edge snapping disabled."
-            )
+        self.statusBar().showMessage(
+            "Edge snapping enabled."
+            if enabled
+            else "Edge snapping disabled."
+        )
 
     def on_seamless_changed(
         self,
@@ -649,14 +636,29 @@ class TextureRipperWindow(QMainWindow):
                 fit_image=False
             )
 
-        if enabled:
-            self.statusBar().showMessage(
-                "Seamless mode enabled."
-            )
-        else:
-            self.statusBar().showMessage(
-                "Seamless mode disabled."
-            )
+        self.statusBar().showMessage(
+            "Seamless mode enabled."
+            if enabled
+            else "Seamless mode disabled."
+        )
+
+    def on_seamless_strength_changed(
+        self,
+        value: int,
+    ) -> None:
+        if not self.live_preview_panel.seamless_enabled():
+            return
+
+        if len(
+            self.image_view.get_selection_points()
+        ) != 4:
+            return
+
+        self.preview_timer.start()
+
+        self.statusBar().showMessage(
+            f"Updating seamless blend: {value}%"
+        )
 
     def on_adjustments_changed(self) -> None:
         if len(
@@ -712,7 +714,10 @@ class TextureRipperWindow(QMainWindow):
             ):
                 texture_array = make_texture_seamless(
                     texture_array,
-                    blend_fraction=0.10,
+                    blend_fraction=(
+                        self.live_preview_panel
+                        .seamless_blend_fraction()
+                    ),
                 )
 
             texture_pixmap = rgba_array_to_qpixmap(
