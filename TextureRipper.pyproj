@@ -23,7 +23,9 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="adjustments_panel.py" />
+    <Compile Include="clone_stamp_view.py" />
     <Compile Include="edge_snapper.py" />
+    <Compile Include="export_settings_dialog.py" />
     <Compile Include="image_view.py" />
     <Compile Include="live_preview_panel.py" />
     <Compile Include="Main.py" />
