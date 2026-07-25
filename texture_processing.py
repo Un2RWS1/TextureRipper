@@ -2,11 +2,12 @@ import math
 
 import cv2
 import numpy as np
+
 from PySide6.QtCore import QPointF
 from PySide6.QtGui import QImage, QPixmap
 
 
-def point_distance(point_a: QPointF, point_b: QPointF) -> float:
+def distance(point_a: QPointF, point_b: QPointF) -> float:
     delta_x = point_b.x() - point_a.x()
     delta_y = point_b.y() - point_a.y()
 
@@ -17,26 +18,38 @@ def calculate_output_size(
     points: list[QPointF],
 ) -> tuple[int, int]:
     if len(points) != 4:
-        raise ValueError("Exactly four points are required.")
+        raise ValueError("Exactly four selection points are required.")
 
-    top_left, top_right, bottom_right, bottom_left = points
+    top_left = points[0]
+    top_right = points[1]
+    bottom_right = points[2]
+    bottom_left = points[3]
 
-    top_width = point_distance(top_left, top_right)
-    bottom_width = point_distance(bottom_left, bottom_right)
+    top_width = distance(top_left, top_right)
+    bottom_width = distance(bottom_left, bottom_right)
 
-    left_height = point_distance(top_left, bottom_left)
-    right_height = point_distance(top_right, bottom_right)
+    left_height = distance(top_left, bottom_left)
+    right_height = distance(top_right, bottom_right)
 
-    output_width = int(round(max(top_width, bottom_width)))
-    output_height = int(round(max(left_height, right_height)))
+    output_width = max(
+        int(round(top_width)),
+        int(round(bottom_width)),
+        1,
+    )
 
-    output_width = max(output_width, 1)
-    output_height = max(output_height, 1)
+    output_height = max(
+        int(round(left_height)),
+        int(round(right_height)),
+        1,
+    )
 
     return output_width, output_height
 
 
-def qimage_to_numpy(image: QImage) -> np.ndarray:
+def qimage_to_rgba_array(image: QImage) -> np.ndarray:
+    if image.isNull():
+        raise ValueError("The source image is empty.")
+
     converted_image = image.convertToFormat(
         QImage.Format.Format_RGBA8888
     )
@@ -45,81 +58,32 @@ def qimage_to_numpy(image: QImage) -> np.ndarray:
     height = converted_image.height()
     bytes_per_line = converted_image.bytesPerLine()
 
-    pointer = converted_image.bits()
+    buffer = converted_image.bits()
 
-    array = np.frombuffer(
-        pointer,
+    image_array = np.frombuffer(
+        buffer,
         dtype=np.uint8,
         count=height * bytes_per_line,
     )
 
-    array = array.reshape(
+    image_array = image_array.reshape(
         height,
         bytes_per_line,
     )
 
-    array = array[:, : width * 4]
-    array = array.reshape(height, width, 4)
+    image_array = image_array[:, : width * 4]
+    image_array = image_array.reshape(height, width, 4)
 
-    return array.copy()
-
-
-def numpy_to_qpixmap(image_array: np.ndarray) -> QPixmap:
-    if image_array.ndim != 3:
-        raise ValueError("Expected a color image array.")
-
-    height, width, channel_count = image_array.shape
-
-    if channel_count == 3:
-        rgb_image = cv2.cvtColor(
-            image_array,
-            cv2.COLOR_BGR2RGB,
-        )
-
-        bytes_per_line = width * 3
-
-        qimage = QImage(
-            rgb_image.data,
-            width,
-            height,
-            bytes_per_line,
-            QImage.Format.Format_RGB888,
-        ).copy()
-
-    elif channel_count == 4:
-        rgba_image = cv2.cvtColor(
-            image_array,
-            cv2.COLOR_BGRA2RGBA,
-        )
-
-        bytes_per_line = width * 4
-
-        qimage = QImage(
-            rgba_image.data,
-            width,
-            height,
-            bytes_per_line,
-            QImage.Format.Format_RGBA8888,
-        ).copy()
-
-    else:
-        raise ValueError(
-            f"Unsupported channel count: {channel_count}"
-        )
-
-    return QPixmap.fromImage(qimage)
+    return image_array.copy()
 
 
 def extract_texture(
     source_image: QImage,
     points: list[QPointF],
 ) -> np.ndarray:
-    if source_image.isNull():
-        raise ValueError("The source image is empty.")
-
     if len(points) != 4:
         raise ValueError(
-            "A four-point selection is required."
+            "Complete the four-corner selection first."
         )
 
     output_width, output_height = calculate_output_size(
@@ -146,23 +110,49 @@ def extract_texture(
         dtype=np.float32,
     )
 
-    source_rgba = qimage_to_numpy(source_image)
+    source_rgba = qimage_to_rgba_array(source_image)
 
-    source_bgra = cv2.cvtColor(
-        source_rgba,
-        cv2.COLOR_RGBA2BGRA,
-    )
-
-    transform_matrix = cv2.getPerspectiveTransform(
+    transformation_matrix = cv2.getPerspectiveTransform(
         source_points,
         destination_points,
     )
 
     extracted_texture = cv2.warpPerspective(
-        source_bgra,
-        transform_matrix,
+        source_rgba,
+        transformation_matrix,
         (output_width, output_height),
         flags=cv2.INTER_CUBIC,
+        borderMode=cv2.BORDER_REPLICATE,
     )
 
     return extracted_texture
+
+
+def rgba_array_to_qpixmap(
+    image_array: np.ndarray,
+) -> QPixmap:
+    if image_array.ndim != 3:
+        raise ValueError(
+            "The image array must have three dimensions."
+        )
+
+    height, width, channel_count = image_array.shape
+
+    if channel_count != 4:
+        raise ValueError(
+            "The image array must contain four RGBA channels."
+        )
+
+    contiguous_array = np.ascontiguousarray(image_array)
+
+    bytes_per_line = width * 4
+
+    qimage = QImage(
+        contiguous_array.data,
+        width,
+        height,
+        bytes_per_line,
+        QImage.Format.Format_RGBA8888,
+    ).copy()
+
+    return QPixmap.fromImage(qimage)

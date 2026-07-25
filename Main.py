@@ -29,49 +29,44 @@ class TextureRipperWindow(QMainWindow):
         self.setWindowTitle("Texture Ripper")
         self.resize(1200, 800)
 
-        # Main image canvas
         self.image_view = ImageView()
-        self.image_view.selection_changed.connect(
+
+        self.image_view.selection_manager.selection_changed.connect(
             self.on_selection_changed
         )
 
-        # Open image button
+        self.image_view.selection_manager.selection_completed.connect(
+            self.on_selection_completed
+        )
+
         self.open_button = QPushButton("Open Image")
         self.open_button.clicked.connect(self.open_image)
 
-        # Fit image button
         self.fit_button = QPushButton("Fit Image")
         self.fit_button.clicked.connect(
             self.image_view.fit_image_to_window
         )
 
-        # Start four-corner selection
         self.select_button = QPushButton("Select Surface")
         self.select_button.clicked.connect(
             self.start_selection
         )
 
-        # Remove the current selection
         self.clear_button = QPushButton("Clear Selection")
         self.clear_button.clicked.connect(
             self.image_view.clear_selection
         )
 
-        # Extract and flatten the selected surface
         self.extract_button = QPushButton("Extract Texture")
         self.extract_button.clicked.connect(
             self.extract_selected_texture
         )
-
-        # Extraction is unavailable until four points exist.
         self.extract_button.setEnabled(False)
 
-        # Shows the number of selected corners
         self.selection_status = QLabel(
             "Selection: 0 / 4 points"
         )
 
-        # Top row of controls
         controls_layout = QHBoxLayout()
         controls_layout.addWidget(self.open_button)
         controls_layout.addWidget(self.fit_button)
@@ -81,7 +76,6 @@ class TextureRipperWindow(QMainWindow):
         controls_layout.addStretch()
         controls_layout.addWidget(self.selection_status)
 
-        # Main application layout
         main_layout = QVBoxLayout()
         main_layout.addLayout(controls_layout)
         main_layout.addWidget(self.image_view, 1)
@@ -97,9 +91,6 @@ class TextureRipperWindow(QMainWindow):
         self.statusBar().showMessage("Ready")
 
     def create_menu(self) -> None:
-        """Create the menus at the top of the window."""
-
-        # File menu
         file_menu = self.menuBar().addMenu("&File")
 
         open_action = QAction("&Open Image", self)
@@ -114,28 +105,29 @@ class TextureRipperWindow(QMainWindow):
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
 
-        # Selection menu
-        selection_menu = self.menuBar().addMenu("&Selection")
+        selection_menu = self.menuBar().addMenu(
+            "&Selection"
+        )
 
-        start_selection_action = QAction(
+        select_action = QAction(
             "&Select Surface",
             self,
         )
-        start_selection_action.setShortcut("S")
-        start_selection_action.triggered.connect(
+        select_action.setShortcut("S")
+        select_action.triggered.connect(
             self.start_selection
         )
-        selection_menu.addAction(start_selection_action)
+        selection_menu.addAction(select_action)
 
-        clear_selection_action = QAction(
+        clear_action = QAction(
             "&Clear Selection",
             self,
         )
-        clear_selection_action.setShortcut("Escape")
-        clear_selection_action.triggered.connect(
+        clear_action.setShortcut("Escape")
+        clear_action.triggered.connect(
             self.image_view.clear_selection
         )
-        selection_menu.addAction(clear_selection_action)
+        selection_menu.addAction(clear_action)
 
         selection_menu.addSeparator()
 
@@ -149,7 +141,6 @@ class TextureRipperWindow(QMainWindow):
         )
         selection_menu.addAction(extract_action)
 
-        # View menu
         view_menu = self.menuBar().addMenu("&View")
 
         fit_action = QAction("&Fit Image", self)
@@ -160,8 +151,6 @@ class TextureRipperWindow(QMainWindow):
         view_menu.addAction(fit_action)
 
     def create_toolbar(self) -> None:
-        """Create the shortcut toolbar."""
-
         toolbar = QToolBar("Main Toolbar")
         toolbar.setMovable(False)
 
@@ -196,8 +185,6 @@ class TextureRipperWindow(QMainWindow):
         toolbar.addAction(fit_action)
 
     def open_image(self) -> None:
-        """Open an image from the computer."""
-
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Open Image",
@@ -209,7 +196,6 @@ class TextureRipperWindow(QMainWindow):
             ),
         )
 
-        # The user pressed Cancel.
         if not file_path:
             return
 
@@ -219,7 +205,7 @@ class TextureRipperWindow(QMainWindow):
             QMessageBox.warning(
                 self,
                 "Unable to Open Image",
-                "The selected file could not be loaded as an image.",
+                "The selected file could not be loaded.",
             )
             return
 
@@ -230,12 +216,10 @@ class TextureRipperWindow(QMainWindow):
         height = pixmap.height()
 
         self.statusBar().showMessage(
-            f"Opened {filename} — {width} × {height} pixels"
+            f"Opened {filename} - {width} x {height} pixels"
         )
 
     def start_selection(self) -> None:
-        """Begin a new four-corner surface selection."""
-
         if not self.image_view.has_image():
             QMessageBox.information(
                 self,
@@ -244,25 +228,21 @@ class TextureRipperWindow(QMainWindow):
             )
             return
 
-        # Starting a new selection removes the old selection.
         self.image_view.clear_selection()
         self.image_view.set_selection_mode(True)
 
         self.statusBar().showMessage(
-            "Click four corners in order: "
-            "top-left, top-right, bottom-right, bottom-left."
+            "Click top-left, top-right, "
+            "bottom-right, then bottom-left."
         )
 
     def on_selection_changed(self, points: list) -> None:
-        """Update the interface whenever selection points change."""
-
         point_count = len(points)
 
         self.selection_status.setText(
             f"Selection: {point_count} / 4 points"
         )
 
-        # Only enable extraction when four corners have been placed.
         self.extract_button.setEnabled(
             point_count == 4
         )
@@ -277,28 +257,26 @@ class TextureRipperWindow(QMainWindow):
                 f"Selection point {point_count} of 4 placed."
             )
 
-        else:
-            self.statusBar().showMessage(
-                "Selection complete. Drag the handles to adjust it, "
-                "then click Extract Texture."
-            )
+    def on_selection_completed(self, points: list) -> None:
+        self.statusBar().showMessage(
+            "Selection complete. Adjust the handles, "
+            "then click Extract Texture."
+        )
 
     def extract_selected_texture(self) -> None:
-        """Flatten the four-corner selection into a rectangle."""
-
         points = self.image_view.get_selection_points()
 
         if len(points) != 4:
             QMessageBox.information(
                 self,
                 "Incomplete Selection",
-                "Select exactly four corners before extracting.",
+                "Select exactly four corners first.",
             )
             return
 
-        pixmap = self.image_view.get_image()
+        source_pixmap = self.image_view.get_image()
 
-        if pixmap.isNull():
+        if source_pixmap.isNull():
             QMessageBox.warning(
                 self,
                 "No Image",
@@ -308,7 +286,7 @@ class TextureRipperWindow(QMainWindow):
 
         try:
             texture_array = extract_texture(
-                pixmap.toImage(),
+                source_pixmap.toImage(),
                 points,
             )
 

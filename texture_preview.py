@@ -1,6 +1,5 @@
 import numpy as np
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap
+
 from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
@@ -8,12 +7,11 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
-    QScrollArea,
     QVBoxLayout,
-    QWidget,
 )
 
-from texture_processing import numpy_to_qpixmap
+from texture_preview_view import TexturePreviewView
+from texture_processing import rgba_array_to_qpixmap
 
 
 class TexturePreviewDialog(QDialog):
@@ -25,33 +23,33 @@ class TexturePreviewDialog(QDialog):
         super().__init__(parent)
 
         self.texture_array = texture_array
-        self.texture_pixmap = numpy_to_qpixmap(
+        self.texture_pixmap = rgba_array_to_qpixmap(
             texture_array
         )
 
-        self.setWindowTitle("Extracted Texture Preview")
+        self.setWindowTitle("Texture Preview")
         self.resize(900, 700)
 
-        self.image_label = QLabel()
-        self.image_label.setAlignment(
-            Qt.AlignmentFlag.AlignCenter
-        )
-        self.image_label.setPixmap(self.texture_pixmap)
-        self.image_label.setMinimumSize(
-            self.texture_pixmap.size()
+        self.preview_view = TexturePreviewView()
+        self.preview_view.set_image(
+            self.texture_pixmap
         )
 
-        scroll_area = QScrollArea()
-        scroll_area.setWidget(self.image_label)
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setAlignment(
-            Qt.AlignmentFlag.AlignCenter
-        )
+        width = self.texture_pixmap.width()
+        height = self.texture_pixmap.height()
 
         self.size_label = QLabel(
-            f"Texture size: "
-            f"{self.texture_pixmap.width()} x "
-            f"{self.texture_pixmap.height()} pixels"
+            f"Texture size: {width} x {height} pixels"
+        )
+
+        self.fit_button = QPushButton("Fit")
+        self.fit_button.clicked.connect(
+            self.preview_view.fit_image_to_window
+        )
+
+        self.actual_size_button = QPushButton("100%")
+        self.actual_size_button.clicked.connect(
+            self.preview_view.actual_size
         )
 
         self.save_button = QPushButton("Save Texture")
@@ -62,15 +60,17 @@ class TexturePreviewDialog(QDialog):
         self.close_button = QPushButton("Close")
         self.close_button.clicked.connect(self.accept)
 
-        button_layout = QHBoxLayout()
-        button_layout.addWidget(self.size_label)
-        button_layout.addStretch()
-        button_layout.addWidget(self.save_button)
-        button_layout.addWidget(self.close_button)
+        controls_layout = QHBoxLayout()
+        controls_layout.addWidget(self.size_label)
+        controls_layout.addStretch()
+        controls_layout.addWidget(self.fit_button)
+        controls_layout.addWidget(self.actual_size_button)
+        controls_layout.addWidget(self.save_button)
+        controls_layout.addWidget(self.close_button)
 
         main_layout = QVBoxLayout()
-        main_layout.addWidget(scroll_area, 1)
-        main_layout.addLayout(button_layout)
+        main_layout.addWidget(self.preview_view, 1)
+        main_layout.addLayout(controls_layout)
 
         self.setLayout(main_layout)
 
@@ -91,7 +91,13 @@ class TexturePreviewDialog(QDialog):
         if not file_path:
             return
 
-        if "." not in file_path.split("/")[-1]:
+        lowercase_path = file_path.lower()
+
+        has_supported_extension = lowercase_path.endswith(
+            (".png", ".jpg", ".jpeg", ".bmp")
+        )
+
+        if not has_supported_extension:
             if "JPEG" in selected_filter:
                 file_path += ".jpg"
             elif "Bitmap" in selected_filter:

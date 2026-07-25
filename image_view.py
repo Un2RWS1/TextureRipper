@@ -1,4 +1,4 @@
-from PySide6.QtCore import QPointF, Qt, Signal
+from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -18,10 +18,13 @@ from PySide6.QtWidgets import (
     QGraphicsView,
 )
 
+from selection_manager import SelectionManager
+
 
 class SelectionHandle(QGraphicsEllipseItem):
     def __init__(
         self,
+        index: int,
         center: QPointF,
         moved_callback,
         radius: float = 8.0,
@@ -33,6 +36,7 @@ class SelectionHandle(QGraphicsEllipseItem):
             radius * 2,
         )
 
+        self.index = index
         self.moved_callback = moved_callback
 
         self.setPos(center)
@@ -44,12 +48,19 @@ class SelectionHandle(QGraphicsEllipseItem):
             QGraphicsItem.GraphicsItemFlag.ItemIsMovable,
             True,
         )
+
         self.setFlag(
             QGraphicsItem.GraphicsItemFlag.ItemIsSelectable,
             True,
         )
+
         self.setFlag(
             QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges,
+            True,
+        )
+
+        self.setFlag(
+            QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations,
             True,
         )
 
@@ -61,27 +72,25 @@ class SelectionHandle(QGraphicsEllipseItem):
             == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged
         ):
             if self.moved_callback is not None:
-                self.moved_callback()
+                self.moved_callback(
+                    self.index,
+                    self.pos(),
+                )
 
         return super().itemChange(change, value)
 
 
 class ImageView(QGraphicsView):
-    selection_changed = Signal(list)
-
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+
+        self.selection_manager = SelectionManager(self)
 
         self._scene = QGraphicsScene(self)
         self.setScene(self._scene)
 
         self._image_item = QGraphicsPixmapItem()
         self._scene.addItem(self._image_item)
-
-        self._has_image = False
-        self._selection_mode = False
-
-        self._selection_handles: list[SelectionHandle] = []
 
         self._selection_polygon = QGraphicsPolygonItem()
         self._selection_polygon.setPen(
@@ -92,6 +101,16 @@ class ImageView(QGraphicsView):
         )
         self._selection_polygon.setZValue(2)
         self._scene.addItem(self._selection_polygon)
+
+        self._selection_handles: list[SelectionHandle] = []
+
+        self._has_image = False
+        self._selection_mode = False
+        self._updating_handles = False
+
+        self.selection_manager.selection_changed.connect(
+            self.sync_selection_graphics
+        )
 
         self.setRenderHint(
             QPainter.RenderHint.SmoothPixmapTransform,
@@ -125,11 +144,14 @@ class ImageView(QGraphicsView):
         if self._has_image:
             self.fit_image_to_window()
 
-    def has_image(self) -> bool:
-        return self._has_image
-    
     def get_image(self) -> QPixmap:
         return self._image_item.pixmap()
+
+    def has_image(self) -> bool:
+        return self._has_image
+
+    def get_selection_points(self) -> list[QPointF]:
+        return self.selection_manager.get_points()
 
     def set_selection_mode(self, enabled: bool) -> None:
         self._selection_mode = enabled
@@ -146,19 +168,8 @@ class ImageView(QGraphicsView):
             self.unsetCursor()
 
     def clear_selection(self) -> None:
-        for handle in self._selection_handles:
-            self._scene.removeItem(handle)
-
-        self._selection_handles.clear()
-        self._selection_polygon.setPolygon(QPolygonF())
-
-        self.selection_changed.emit([])
-
-    def get_selection_points(self) -> list[QPointF]:
-        return [
-            handle.pos()
-            for handle in self._selection_handles
-        ]
+        self.set_selection_mode(False)
+        self.selection_manager.clear()
 
     def fit_image_to_window(self) -> None:
         if not self._has_image:
@@ -171,19 +182,58 @@ class ImageView(QGraphicsView):
             Qt.AspectRatioMode.KeepAspectRatio,
         )
 
-    def update_selection_polygon(self) -> None:
-        points = self.get_selection_points()
-
-        polygon = QPolygonF(points)
-        self._selection_polygon.setPolygon(polygon)
-
-        self.selection_changed.emit(points)
-
     def point_is_inside_image(
         self,
         point: QPointF,
     ) -> bool:
         return self._image_item.boundingRect().contains(point)
+
+    def handle_moved(
+        self,
+        index: int,
+        point: QPointF,
+    ) -> None:
+        if self._updating_handles:
+            return
+
+        if not self.point_is_inside_image(point):
+            return
+
+        self.selection_manager.update_point(
+            index,
+            point,
+        )
+
+    def sync_selection_graphics(
+        self,
+        points: list[QPointF],
+    ) -> None:
+        self._updating_handles = True
+
+        while len(self._selection_handles) > len(points):
+            handle = self._selection_handles.pop()
+            self._scene.removeItem(handle)
+
+        while len(self._selection_handles) < len(points):
+            index = len(self._selection_handles)
+
+            handle = SelectionHandle(
+                index=index,
+                center=points[index],
+                moved_callback=self.handle_moved,
+            )
+
+            self._selection_handles.append(handle)
+            self._scene.addItem(handle)
+
+        for index, point in enumerate(points):
+            self._selection_handles[index].setPos(point)
+
+        self._selection_polygon.setPolygon(
+            QPolygonF(points)
+        )
+
+        self._updating_handles = False
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if (
@@ -197,21 +247,14 @@ class ImageView(QGraphicsView):
             if not self.point_is_inside_image(scene_position):
                 return
 
-            if len(self._selection_handles) < 4:
-                handle = SelectionHandle(
-                    scene_position,
-                    self.update_selection_polygon,
-                )
+            added = self.selection_manager.add_point(
+                scene_position
+            )
 
-                self._selection_handles.append(handle)
-                self._scene.addItem(handle)
+            if added and self.selection_manager.is_complete():
+                self.set_selection_mode(False)
 
-                self.update_selection_polygon()
-
-                if len(self._selection_handles) == 4:
-                    self.set_selection_mode(False)
-
-                return
+            return
 
         super().mousePressEvent(event)
 
