@@ -29,6 +29,8 @@
     <Compile Include="image_view.py" />
     <Compile Include="live_preview_panel.py" />
     <Compile Include="Main.py" />
+    <Compile Include="pbr_generation.py" />
+    <Compile Include="pbr_preview_dialog.py" />
     <Compile Include="selection_manager.py" />
     <Compile Include="texture_adjustments.py" />
     <Compile Include="texture_preview.py" />
@@ -45,6 +47,12 @@
       <PathEnvironmentVariable>PYTHONPATH</PathEnvironmentVariable>
       <Architecture>X64</Architecture>
     </Interpreter>
+  </ItemGroup>
+  <ItemGroup>
+    <Folder Include="assets\" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="assets\texture_ripper.ico" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
   <!-- Uncomment the CoreCompile target to enable the Build command in

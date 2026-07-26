@@ -1,3 +1,9 @@
+import ctypes
+import sys
+from pathlib import Path
+
+from PySide6.QtGui import QIcon
+
 import sys
 from pathlib import Path
 
@@ -776,19 +782,51 @@ class TextureRipperWindow(QMainWindow):
 
         preview_dialog.exec()
 
+def resource_path(relative_path: str) -> Path:
+    """
+    Return the correct resource path while running normally
+    or from a PyInstaller bundle.
+    """
+
+    return Path(__file__).resolve().parent / relative_path
 
 def main() -> None:
-    app = QApplication(
-        sys.argv
+    # Gives Windows a unique identity for the taskbar icon.
+    try:
+        app_id = "KevinLin.TextureRipper.1.0"
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            app_id
+        )
+    except (AttributeError, OSError):
+        pass
+
+    app = QApplication(sys.argv)
+
+    icon_path = resource_path(
+        "assets/texture_ripper.ico"
     )
 
+    if icon_path.exists():
+        app.setWindowIcon(
+            QIcon(str(icon_path))
+        )
+
     window = TextureRipperWindow()
+
+    if icon_path.exists():
+        window.setWindowIcon(
+            QIcon(str(icon_path))
+        )
+
     window.show()
 
     sys.exit(
         app.exec()
     )
 
+
+if __name__ == "__main__":
+    main()
 
 if __name__ == "__main__":
     main()
