@@ -6,9 +6,9 @@ from PySide6.QtGui import (
     QColor,
     QImage,
     QPainter,
-    QPixmap,
 )
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QDialog,
     QFileDialog,
@@ -16,65 +16,19 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QRadioButton,
     QSlider,
     QToolBar,
     QVBoxLayout,
 )
 
-from clone_stamp_view import CloneStampView
+from clone_stamp_view import (
+    CloneStampView,
+    qimage_to_rgba_array,
+    rgba_array_to_qimage,
+)
 from export_settings_dialog import ExportSettingsDialog
 from texture_processing import rgba_array_to_qpixmap
-
-
-def qimage_to_array(
-    image: QImage,
-) -> np.ndarray:
-    converted = image.convertToFormat(
-        QImage.Format.Format_RGBA8888
-    )
-
-    width = converted.width()
-    height = converted.height()
-    bytes_per_line = converted.bytesPerLine()
-
-    buffer = converted.bits()
-
-    array = np.frombuffer(
-        buffer,
-        dtype=np.uint8,
-        count=height * bytes_per_line,
-    )
-
-    array = array.reshape(
-        height,
-        bytes_per_line,
-    )
-
-    array = array[:, : width * 4]
-
-    return array.reshape(
-        height,
-        width,
-        4,
-    ).copy()
-
-
-def array_to_qimage(
-    array: np.ndarray,
-) -> QImage:
-    contiguous = np.ascontiguousarray(
-        array
-    )
-
-    height, width, _ = contiguous.shape
-
-    return QImage(
-        contiguous.data,
-        width,
-        height,
-        width * 4,
-        QImage.Format.Format_RGBA8888,
-    ).copy()
 
 
 def shift_image(
@@ -82,7 +36,7 @@ def shift_image(
     horizontal_shift: int,
     vertical_shift: int,
 ) -> QImage:
-    array = qimage_to_array(
+    array = qimage_to_rgba_array(
         image
     )
 
@@ -98,7 +52,7 @@ def shift_image(
         axis=1,
     )
 
-    return array_to_qimage(
+    return rgba_array_to_qimage(
         shifted
     )
 
@@ -112,17 +66,19 @@ class TexturePreviewDialog(QDialog):
         super().__init__(parent)
 
         self.setWindowTitle(
-            "Texture Preview and Seam Editor"
+            "Texture Preview and Seam Repair"
         )
         self.resize(
-            1100,
-            800,
+            1200,
+            850,
         )
 
         self.original_image = (
             rgba_array_to_qpixmap(
                 texture_array
-            ).toImage().convertToFormat(
+            )
+            .toImage()
+            .convertToFormat(
                 QImage.Format.Format_RGBA8888
             )
         )
@@ -134,128 +90,67 @@ class TexturePreviewDialog(QDialog):
             self.original_image
         )
 
+        self.preview_view.status_message.connect(
+            self.on_editor_status
+        )
+
         self.create_toolbar()
+        self.create_tool_controls()
+        self.create_brush_controls()
+        self.create_bottom_controls()
 
-        self.offset_checkbox = QCheckBox(
-            "Offset View"
+        controls_layout = QHBoxLayout()
+        controls_layout.addWidget(
+            self.pan_radio
         )
-        self.offset_checkbox.toggled.connect(
-            self.on_offset_changed
+        controls_layout.addWidget(
+            self.clone_radio
         )
-
-        self.clone_checkbox = QCheckBox(
-            "Clone Stamp"
-        )
-        self.clone_checkbox.setToolTip(
-            "Enable clone painting. "
-            "Alt + click chooses the source."
-        )
-        self.clone_checkbox.toggled.connect(
-            self.preview_view.set_clone_enabled
+        controls_layout.addWidget(
+            self.heal_radio
         )
 
-        self.brush_size_label = QLabel(
-            "Brush: 60 px"
-        )
+        controls_layout.addSpacing(12)
 
-        self.brush_size_slider = QSlider(
-            Qt.Orientation.Horizontal
-        )
-        self.brush_size_slider.setRange(
-            5,
-            300,
-        )
-        self.brush_size_slider.setValue(
-            60
-        )
-        self.brush_size_slider.setFixedWidth(
-            130
-        )
-        self.brush_size_slider.valueChanged.connect(
-            self.on_brush_size_changed
-        )
-
-        self.opacity_label = QLabel(
-            "Opacity: 85%"
-        )
-
-        self.opacity_slider = QSlider(
-            Qt.Orientation.Horizontal
-        )
-        self.opacity_slider.setRange(
-            1,
-            100,
-        )
-        self.opacity_slider.setValue(
-            85
-        )
-        self.opacity_slider.setFixedWidth(
-            110
-        )
-        self.opacity_slider.valueChanged.connect(
-            self.on_brush_opacity_changed
-        )
-
-        self.instructions_label = QLabel(
-            "Clone Stamp: Alt + click a clean source, "
-            "then drag over the seam."
-        )
-        self.instructions_label.setWordWrap(
-            True
-        )
-
-        self.fit_button = QPushButton(
-            "Fit"
-        )
-        self.fit_button.clicked.connect(
-            self.preview_view.fit_image_to_window
-        )
-
-        self.actual_size_button = QPushButton(
-            "100%"
-        )
-        self.actual_size_button.clicked.connect(
-            self.preview_view.actual_size
-        )
-
-        self.export_button = QPushButton(
-            "Export..."
-        )
-        self.export_button.clicked.connect(
-            self.export_texture
-        )
-
-        self.close_button = QPushButton(
-            "Close"
-        )
-        self.close_button.clicked.connect(
-            self.accept
-        )
-
-        edit_controls = QHBoxLayout()
-        edit_controls.addWidget(
+        controls_layout.addWidget(
             self.offset_checkbox
         )
-        edit_controls.addWidget(
-            self.clone_checkbox
+        controls_layout.addWidget(
+            self.seam_guides_checkbox
         )
-        edit_controls.addWidget(
+
+        controls_layout.addSpacing(12)
+
+        controls_layout.addWidget(
             self.brush_size_label
         )
-        edit_controls.addWidget(
+        controls_layout.addWidget(
             self.brush_size_slider
         )
-        edit_controls.addWidget(
+
+        controls_layout.addWidget(
             self.opacity_label
         )
-        edit_controls.addWidget(
+        controls_layout.addWidget(
             self.opacity_slider
         )
-        edit_controls.addStretch()
-        edit_controls.addWidget(
+
+        controls_layout.addWidget(
+            self.hardness_label
+        )
+        controls_layout.addWidget(
+            self.hardness_slider
+        )
+
+        controls_layout.addStretch()
+
+        controls_layout.addWidget(
+            self.clear_source_button
+        )
+        controls_layout.addWidget(
             self.fit_button
         )
-        edit_controls.addWidget(
+        controls_layout.addWidget(
             self.actual_size_button
         )
 
@@ -280,7 +175,7 @@ class TexturePreviewDialog(QDialog):
             1,
         )
         main_layout.addLayout(
-            edit_controls
+            controls_layout
         )
         main_layout.addLayout(
             bottom_layout
@@ -300,7 +195,7 @@ class TexturePreviewDialog(QDialog):
             .undo_stack
             .createUndoAction(
                 self,
-                "Undo Stroke",
+                "Undo Repair",
             )
         )
         undo_action.setShortcut(
@@ -312,7 +207,7 @@ class TexturePreviewDialog(QDialog):
             .undo_stack
             .createRedoAction(
                 self,
-                "Redo Stroke",
+                "Redo Repair",
             )
         )
         redo_action.setShortcut(
@@ -326,12 +221,204 @@ class TexturePreviewDialog(QDialog):
             redo_action
         )
 
+    def create_tool_controls(self) -> None:
+        self.pan_radio = QRadioButton(
+            "Pan"
+        )
+        self.clone_radio = QRadioButton(
+            "Clone"
+        )
+        self.heal_radio = QRadioButton(
+            "Heal"
+        )
+
+        self.pan_radio.setChecked(
+            True
+        )
+
+        self.tool_group = QButtonGroup(
+            self
+        )
+
+        self.tool_group.addButton(
+            self.pan_radio
+        )
+        self.tool_group.addButton(
+            self.clone_radio
+        )
+        self.tool_group.addButton(
+            self.heal_radio
+        )
+
+        self.pan_radio.toggled.connect(
+            self.on_tool_changed
+        )
+        self.clone_radio.toggled.connect(
+            self.on_tool_changed
+        )
+        self.heal_radio.toggled.connect(
+            self.on_tool_changed
+        )
+
+        self.offset_checkbox = QCheckBox(
+            "Offset View"
+        )
+        self.offset_checkbox.setToolTip(
+            "Move the outer texture edges into the center "
+            "for seam repair."
+        )
+        self.offset_checkbox.toggled.connect(
+            self.on_offset_changed
+        )
+
+        self.seam_guides_checkbox = QCheckBox(
+            "Seam Guides"
+        )
+        self.seam_guides_checkbox.setChecked(
+            True
+        )
+
+    def create_brush_controls(self) -> None:
+        self.brush_size_label = QLabel(
+            "Size: 60 px"
+        )
+
+        self.brush_size_slider = QSlider(
+            Qt.Orientation.Horizontal
+        )
+        self.brush_size_slider.setRange(
+            5,
+            300,
+        )
+        self.brush_size_slider.setValue(
+            60
+        )
+        self.brush_size_slider.setFixedWidth(
+            110
+        )
+        self.brush_size_slider.valueChanged.connect(
+            self.on_brush_size_changed
+        )
+
+        self.opacity_label = QLabel(
+            "Opacity: 85%"
+        )
+
+        self.opacity_slider = QSlider(
+            Qt.Orientation.Horizontal
+        )
+        self.opacity_slider.setRange(
+            1,
+            100,
+        )
+        self.opacity_slider.setValue(
+            85
+        )
+        self.opacity_slider.setFixedWidth(
+            95
+        )
+        self.opacity_slider.valueChanged.connect(
+            self.on_brush_opacity_changed
+        )
+
+        self.hardness_label = QLabel(
+            "Hardness: 75%"
+        )
+
+        self.hardness_slider = QSlider(
+            Qt.Orientation.Horizontal
+        )
+        self.hardness_slider.setRange(
+            5,
+            100,
+        )
+        self.hardness_slider.setValue(
+            75
+        )
+        self.hardness_slider.setFixedWidth(
+            95
+        )
+        self.hardness_slider.valueChanged.connect(
+            self.on_brush_hardness_changed
+        )
+
+    def create_bottom_controls(self) -> None:
+        self.clear_source_button = QPushButton(
+            "Clear Source"
+        )
+        self.clear_source_button.clicked.connect(
+            self.preview_view.clear_source
+        )
+
+        self.fit_button = QPushButton(
+            "Fit"
+        )
+        self.fit_button.clicked.connect(
+            self.preview_view.fit_image_to_window
+        )
+
+        self.actual_size_button = QPushButton(
+            "100%"
+        )
+        self.actual_size_button.clicked.connect(
+            self.preview_view.actual_size
+        )
+
+        self.instructions_label = QLabel(
+            "Choose Clone or Heal. Alt + click a clean "
+            "source area, then paint over the center seams."
+        )
+        self.instructions_label.setWordWrap(
+            True
+        )
+
+        self.export_button = QPushButton(
+            "Export..."
+        )
+        self.export_button.clicked.connect(
+            self.export_texture
+        )
+
+        self.close_button = QPushButton(
+            "Close"
+        )
+        self.close_button.clicked.connect(
+            self.accept
+        )
+
+    def on_tool_changed(self) -> None:
+        if self.pan_radio.isChecked():
+            tool = CloneStampView.TOOL_PAN
+        elif self.clone_radio.isChecked():
+            tool = CloneStampView.TOOL_CLONE
+        else:
+            tool = CloneStampView.TOOL_HEAL
+
+        self.preview_view.set_tool(
+            tool
+        )
+
+        if tool == CloneStampView.TOOL_PAN:
+            self.instructions_label.setText(
+                "Pan mode: drag to move around the texture."
+            )
+        elif tool == CloneStampView.TOOL_CLONE:
+            self.instructions_label.setText(
+                "Clone: Alt + click a clean source, then "
+                "paint exact copied pixels over the seam."
+            )
+        else:
+            self.instructions_label.setText(
+                "Heal: Alt + click a similar source, then "
+                "paint over the seam. The result blends after release."
+            )
+
     def on_brush_size_changed(
         self,
         size: int,
     ) -> None:
         self.brush_size_label.setText(
-            f"Brush: {size} px"
+            f"Size: {size} px"
         )
 
         self.preview_view.set_brush_size(
@@ -348,6 +435,26 @@ class TexturePreviewDialog(QDialog):
 
         self.preview_view.set_brush_opacity(
             value / 100.0
+        )
+
+    def on_brush_hardness_changed(
+        self,
+        value: int,
+    ) -> None:
+        self.hardness_label.setText(
+            f"Hardness: {value}%"
+        )
+
+        self.preview_view.set_brush_hardness(
+            value / 100.0
+        )
+
+    def on_editor_status(
+        self,
+        message: str,
+    ) -> None:
+        self.instructions_label.setText(
+            message
         )
 
     def on_offset_changed(
@@ -384,14 +491,28 @@ class TexturePreviewDialog(QDialog):
             preserve_view=True,
         )
 
-        # A coordinate remap changes the entire edit state,
-        # so clear local stroke history.
+        self.preview_view.clear_source()
+
+        # Coordinate remapping invalidates the previous local
+        # brush-stroke history.
         self.preview_view.undo_stack.clear()
+
+        if enabled:
+            self.instructions_label.setText(
+                "Offset view enabled. Repair the horizontal "
+                "and vertical seams crossing the center."
+            )
+        else:
+            self.instructions_label.setText(
+                "Offset view disabled."
+            )
 
     def get_original_orientation_image(
         self,
     ) -> QImage:
-        image = self.preview_view.working_image()
+        image = (
+            self.preview_view.working_image()
+        )
 
         if not self.offset_enabled:
             return image
@@ -457,6 +578,7 @@ class TexturePreviewDialog(QDialog):
                 result.size(),
                 QImage.Format.Format_RGB888,
             )
+
             flattened.fill(
                 QColor(255, 255, 255)
             )
@@ -534,7 +656,6 @@ class TexturePreviewDialog(QDialog):
         if file_path.lower().endswith(
             (".jpg", ".jpeg")
         ):
-            # JPEG has no alpha channel.
             export_image = export_image.convertToFormat(
                 QImage.Format.Format_RGB888
             )

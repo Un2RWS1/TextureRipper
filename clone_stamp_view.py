@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 
+import cv2
 import numpy as np
 
 from PySide6.QtCore import QPointF, QRect, Qt, Signal
@@ -10,6 +11,7 @@ from PySide6.QtGui import (
     QImage,
     QMouseEvent,
     QPainter,
+    QPainterPath,
     QPen,
     QPixmap,
     QUndoCommand,
@@ -24,8 +26,54 @@ from PySide6.QtWidgets import (
 )
 
 
-def copy_image(image: QImage) -> QImage:
-    return image.copy()
+def qimage_to_rgba_array(image: QImage) -> np.ndarray:
+    converted = image.convertToFormat(
+        QImage.Format.Format_RGBA8888
+    )
+
+    width = converted.width()
+    height = converted.height()
+    bytes_per_line = converted.bytesPerLine()
+
+    buffer = converted.bits()
+
+    array = np.frombuffer(
+        buffer,
+        dtype=np.uint8,
+        count=height * bytes_per_line,
+    )
+
+    array = array.reshape(
+        height,
+        bytes_per_line,
+    )
+
+    array = array[:, : width * 4]
+
+    return array.reshape(
+        height,
+        width,
+        4,
+    ).copy()
+
+
+def rgba_array_to_qimage(array: np.ndarray) -> QImage:
+    contiguous = np.ascontiguousarray(array)
+
+    height, width, channels = contiguous.shape
+
+    if channels != 4:
+        raise ValueError(
+            "Expected an RGBA image array."
+        )
+
+    return QImage(
+        contiguous.data,
+        width,
+        height,
+        width * 4,
+        QImage.Format.Format_RGBA8888,
+    ).copy()
 
 
 class ImageEditCommand(QUndoCommand):
@@ -40,8 +88,8 @@ class ImageEditCommand(QUndoCommand):
         super().__init__(description)
 
         self.view = view
-        self.before_image = copy_image(before_image)
-        self.after_image = copy_image(after_image)
+        self.before_image = before_image.copy()
+        self.after_image = after_image.copy()
 
         self.first_redo_already_applied = (
             first_redo_already_applied
@@ -72,6 +120,12 @@ class ImageEditCommand(QUndoCommand):
 
 class CloneStampView(QGraphicsView):
     image_changed = Signal()
+    source_changed = Signal(bool)
+    status_message = Signal(str)
+
+    TOOL_PAN = "pan"
+    TOOL_CLONE = "clone"
+    TOOL_HEAL = "heal"
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -83,10 +137,10 @@ class CloneStampView(QGraphicsView):
         self._scene.addItem(self._image_item)
 
         self._source_marker = QGraphicsEllipseItem(
-            -8,
-            -8,
-            16,
-            16,
+            -9,
+            -9,
+            18,
+            18,
         )
         self._source_marker.setPen(
             QPen(
@@ -96,24 +150,32 @@ class CloneStampView(QGraphicsView):
         )
         self._source_marker.setZValue(20)
         self._source_marker.hide()
-        self._scene.addItem(self._source_marker)
+        self._scene.addItem(
+            self._source_marker
+        )
 
         self.undo_stack = QUndoStack(self)
 
         self._working_image = QImage()
         self._has_image = False
 
-        self._clone_enabled = False
+        self._tool = self.TOOL_PAN
+
         self._source_point: QPointF | None = None
         self._clone_offset = QPointF()
 
         self._brush_size = 60
         self._brush_opacity = 0.85
+        self._brush_hardness = 0.75
 
         self._painting = False
         self._stroke_before_image = QImage()
         self._stroke_source_image = QImage()
         self._last_stamp_position: QPointF | None = None
+
+        # Used by the healing brush.
+        self._healing_source_layer: np.ndarray | None = None
+        self._healing_mask: np.ndarray | None = None
 
         self.setTransformationAnchor(
             QGraphicsView.ViewportAnchor.AnchorUnderMouse
@@ -122,12 +184,12 @@ class CloneStampView(QGraphicsView):
             QGraphicsView.ViewportAnchor.AnchorViewCenter
         )
 
-        self.setDragMode(
-            QGraphicsView.DragMode.ScrollHandDrag
-        )
-
         self.setBackgroundBrush(
             QColor(45, 45, 45)
+        )
+
+        self.set_tool(
+            self.TOOL_PAN
         )
 
     def set_working_image(
@@ -141,11 +203,12 @@ class CloneStampView(QGraphicsView):
             QImage.Format.Format_RGBA8888
         ).copy()
 
-        pixmap = QPixmap.fromImage(
-            self._working_image
+        self._image_item.setPixmap(
+            QPixmap.fromImage(
+                self._working_image
+            )
         )
 
-        self._image_item.setPixmap(pixmap)
         self._scene.setSceneRect(
             self._image_item.boundingRect()
         )
@@ -165,11 +228,15 @@ class CloneStampView(QGraphicsView):
     def clear(self) -> None:
         self._working_image = QImage()
         self._image_item.setPixmap(QPixmap())
-        self._scene.setSceneRect(0, 0, 0, 0)
+        self._scene.setSceneRect(
+            0,
+            0,
+            0,
+            0,
+        )
 
         self._has_image = False
-        self._source_point = None
-        self._source_marker.hide()
+        self.clear_source()
 
         self.undo_stack.clear()
         self.resetTransform()
@@ -191,28 +258,36 @@ class CloneStampView(QGraphicsView):
 
         self.resetTransform()
 
-    def set_clone_enabled(
-        self,
-        enabled: bool,
-    ) -> None:
-        self._clone_enabled = enabled
+    def set_tool(self, tool: str) -> None:
+        valid_tools = {
+            self.TOOL_PAN,
+            self.TOOL_CLONE,
+            self.TOOL_HEAL,
+        }
 
-        if enabled:
+        if tool not in valid_tools:
+            raise ValueError(
+                f"Unknown editor tool: {tool}"
+            )
+
+        self.stop_stroke()
+        self._tool = tool
+
+        if tool == self.TOOL_PAN:
+            self.setDragMode(
+                QGraphicsView.DragMode.ScrollHandDrag
+            )
+            self.unsetCursor()
+        else:
             self.setDragMode(
                 QGraphicsView.DragMode.NoDrag
             )
             self.setCursor(
                 Qt.CursorShape.CrossCursor
             )
-        else:
-            self.stop_stroke()
-            self.setDragMode(
-                QGraphicsView.DragMode.ScrollHandDrag
-            )
-            self.unsetCursor()
 
-    def clone_enabled(self) -> bool:
-        return self._clone_enabled
+    def current_tool(self) -> str:
+        return self._tool
 
     def set_brush_size(
         self,
@@ -230,6 +305,15 @@ class CloneStampView(QGraphicsView):
         self._brush_opacity = max(
             0.01,
             min(float(opacity), 1.0),
+        )
+
+    def set_brush_hardness(
+        self,
+        hardness: float,
+    ) -> None:
+        self._brush_hardness = max(
+            0.05,
+            min(float(hardness), 1.0),
         )
 
     def point_inside_image(
@@ -254,11 +338,25 @@ class CloneStampView(QGraphicsView):
         )
         self._source_marker.show()
 
+        self.source_changed.emit(True)
+        self.status_message.emit(
+            "Repair source selected."
+        )
+
+    def clear_source(self) -> None:
+        self._source_point = None
+        self._source_marker.hide()
+
+        self.source_changed.emit(False)
+
     def begin_stroke(
         self,
         destination_point: QPointF,
     ) -> None:
         if self._source_point is None:
+            self.status_message.emit(
+                "Alt + click a clean area to select a source first."
+            )
             return
 
         self._painting = True
@@ -266,6 +364,7 @@ class CloneStampView(QGraphicsView):
         self._stroke_before_image = (
             self._working_image.copy()
         )
+
         self._stroke_source_image = (
             self._working_image.copy()
         )
@@ -276,6 +375,23 @@ class CloneStampView(QGraphicsView):
         )
 
         self._last_stamp_position = None
+
+        if self._tool == self.TOOL_HEAL:
+            shape = (
+                self._working_image.height(),
+                self._working_image.width(),
+                4,
+            )
+
+            self._healing_source_layer = np.zeros(
+                shape,
+                dtype=np.uint8,
+            )
+
+            self._healing_mask = np.zeros(
+                shape[:2],
+                dtype=np.uint8,
+            )
 
         self.paint_interpolated(
             destination_point
@@ -288,34 +404,66 @@ class CloneStampView(QGraphicsView):
         self._painting = False
         self._last_stamp_position = None
 
+        if self._tool == self.TOOL_HEAL:
+            self.finish_healing_stroke()
+
+        self._healing_source_layer = None
+        self._healing_mask = None
+
         if (
             self._stroke_before_image.isNull()
             or self._working_image.isNull()
         ):
             return
 
-        if (
-            self._stroke_before_image
-            == self._working_image
+        if self.images_are_equal(
+            self._stroke_before_image,
+            self._working_image,
         ):
             return
+
+        description = (
+            "Healing brush stroke"
+            if self._tool == self.TOOL_HEAL
+            else "Clone stamp stroke"
+        )
 
         command = ImageEditCommand(
             view=self,
             before_image=self._stroke_before_image,
             after_image=self._working_image,
-            description="Clone stamp stroke",
+            description=description,
             first_redo_already_applied=True,
         )
 
         self.undo_stack.push(command)
+
+    @staticmethod
+    def images_are_equal(
+        first: QImage,
+        second: QImage,
+    ) -> bool:
+        if first.size() != second.size():
+            return False
+
+        first_array = qimage_to_rgba_array(
+            first
+        )
+        second_array = qimage_to_rgba_array(
+            second
+        )
+
+        return np.array_equal(
+            first_array,
+            second_array,
+        )
 
     def paint_interpolated(
         self,
         current_point: QPointF,
     ) -> None:
         if self._last_stamp_position is None:
-            self.apply_clone_stamp(
+            self.apply_brush_stamp(
                 current_point
             )
             self._last_stamp_position = QPointF(
@@ -336,7 +484,7 @@ class CloneStampView(QGraphicsView):
 
         spacing = max(
             1.0,
-            self._brush_size * 0.18,
+            self._brush_size * 0.15,
         )
 
         steps = max(
@@ -352,7 +500,7 @@ class CloneStampView(QGraphicsView):
                 start.y() + delta_y * fraction,
             )
 
-            self.apply_clone_stamp(
+            self.apply_brush_stamp(
                 interpolated
             )
 
@@ -360,79 +508,471 @@ class CloneStampView(QGraphicsView):
             current_point
         )
 
-    def apply_clone_stamp(
+    def apply_brush_stamp(
         self,
         destination_center: QPointF,
     ) -> None:
-        if self._stroke_source_image.isNull():
-            return
+        if self._tool == self.TOOL_HEAL:
+            self.add_healing_stamp(
+                destination_center
+            )
+        else:
+            self.apply_clone_stamp(
+                destination_center
+            )
 
-        radius = self._brush_size // 2
+    def create_soft_mask(
+        self,
+        size: int,
+    ) -> np.ndarray:
+        radius = size / 2.0
+
+        y_values, x_values = np.ogrid[
+            :size,
+            :size,
+        ]
+
+        distance = np.sqrt(
+            (x_values - radius + 0.5) ** 2
+            + (y_values - radius + 0.5) ** 2
+        )
+
+        inner_radius = (
+            radius * self._brush_hardness
+        )
+
+        mask = np.ones(
+            (size, size),
+            dtype=np.float32,
+        )
+
+        outside = distance >= radius
+        fade_region = (
+            (distance > inner_radius)
+            & (distance < radius)
+        )
+
+        mask[outside] = 0.0
+
+        fade_width = max(
+            radius - inner_radius,
+            0.001,
+        )
+
+        mask[fade_region] = (
+            radius - distance[fade_region]
+        ) / fade_width
+
+        mask *= self._brush_opacity
+
+        return np.clip(
+            mask * 255.0,
+            0,
+            255,
+        ).astype(np.uint8)
+
+    def calculate_patch_geometry(
+        self,
+        destination_center: QPointF,
+    ):
+        image_width = self._working_image.width()
+        image_height = self._working_image.height()
+
+        size = self._brush_size
+        half = size // 2
 
         source_center = (
             destination_center
             + self._clone_offset
         )
 
-        source_rectangle = QRect(
-            int(round(source_center.x())) - radius,
-            int(round(source_center.y())) - radius,
-            self._brush_size,
-            self._brush_size,
+        destination_x = (
+            int(round(destination_center.x()))
+            - half
+        )
+        destination_y = (
+            int(round(destination_center.y()))
+            - half
         )
 
-        destination_rectangle = QRect(
-            int(round(destination_center.x())) - radius,
-            int(round(destination_center.y())) - radius,
-            self._brush_size,
-            self._brush_size,
+        source_x = (
+            int(round(source_center.x()))
+            - half
+        )
+        source_y = (
+            int(round(source_center.y()))
+            - half
         )
 
-        source_patch = self._stroke_source_image.copy(
-            source_rectangle
+        destination_left = max(
+            0,
+            destination_x,
+        )
+        destination_top = max(
+            0,
+            destination_y,
+        )
+        destination_right = min(
+            image_width,
+            destination_x + size,
+        )
+        destination_bottom = min(
+            image_height,
+            destination_y + size,
         )
 
-        if source_patch.isNull():
+        if (
+            destination_right <= destination_left
+            or destination_bottom <= destination_top
+        ):
+            return None
+
+        offset_left = (
+            destination_left - destination_x
+        )
+        offset_top = (
+            destination_top - destination_y
+        )
+
+        source_left = source_x + offset_left
+        source_top = source_y + offset_top
+
+        patch_width = (
+            destination_right - destination_left
+        )
+        patch_height = (
+            destination_bottom - destination_top
+        )
+
+        source_left = max(
+            0,
+            min(
+                source_left,
+                image_width - patch_width,
+            ),
+        )
+        source_top = max(
+            0,
+            min(
+                source_top,
+                image_height - patch_height,
+            ),
+        )
+
+        return {
+            "destination_left": destination_left,
+            "destination_top": destination_top,
+            "source_left": source_left,
+            "source_top": source_top,
+            "width": patch_width,
+            "height": patch_height,
+            "mask_left": offset_left,
+            "mask_top": offset_top,
+        }
+
+    def apply_clone_stamp(
+        self,
+        destination_center: QPointF,
+    ) -> None:
+        geometry = self.calculate_patch_geometry(
+            destination_center
+        )
+
+        if geometry is None:
             return
 
-        painter = QPainter(
+        source_array = qimage_to_rgba_array(
+            self._stroke_source_image
+        )
+        destination_array = qimage_to_rgba_array(
             self._working_image
         )
 
-        painter.setRenderHint(
-            QPainter.RenderHint.Antialiasing,
-            True,
+        source_patch = source_array[
+            geometry["source_top"]:
+            geometry["source_top"]
+            + geometry["height"],
+
+            geometry["source_left"]:
+            geometry["source_left"]
+            + geometry["width"],
+        ]
+
+        destination_patch = destination_array[
+            geometry["destination_top"]:
+            geometry["destination_top"]
+            + geometry["height"],
+
+            geometry["destination_left"]:
+            geometry["destination_left"]
+            + geometry["width"],
+        ]
+
+        full_mask = self.create_soft_mask(
+            self._brush_size
         )
 
-        painter.setOpacity(
-            self._brush_opacity
+        patch_mask = full_mask[
+            geometry["mask_top"]:
+            geometry["mask_top"]
+            + geometry["height"],
+
+            geometry["mask_left"]:
+            geometry["mask_left"]
+            + geometry["width"],
+        ]
+
+        alpha = (
+            patch_mask.astype(np.float32)
+            / 255.0
+        )[:, :, np.newaxis]
+
+        blended = (
+            source_patch.astype(np.float32)
+            * alpha
+            + destination_patch.astype(np.float32)
+            * (1.0 - alpha)
         )
 
-        painter.setClipPath(
-            self.create_circular_clip(
-                destination_rectangle
-            )
-        )
+        destination_array[
+            geometry["destination_top"]:
+            geometry["destination_top"]
+            + geometry["height"],
 
-        painter.drawImage(
-            destination_rectangle,
-            source_patch,
-        )
+            geometry["destination_left"]:
+            geometry["destination_left"]
+            + geometry["width"],
+        ] = np.clip(
+            blended,
+            0,
+            255,
+        ).astype(np.uint8)
 
-        painter.end()
+        self._working_image = rgba_array_to_qimage(
+            destination_array
+        )
 
         self.refresh_pixmap()
 
-    def create_circular_clip(
+    def add_healing_stamp(
         self,
-        rectangle: QRect,
-    ):
-        from PySide6.QtGui import QPainterPath
+        destination_center: QPointF,
+    ) -> None:
+        if (
+            self._healing_source_layer is None
+            or self._healing_mask is None
+        ):
+            return
 
-        path = QPainterPath()
-        path.addEllipse(rectangle)
+        geometry = self.calculate_patch_geometry(
+            destination_center
+        )
 
-        return path
+        if geometry is None:
+            return
+
+        source_array = qimage_to_rgba_array(
+            self._stroke_source_image
+        )
+
+        source_patch = source_array[
+            geometry["source_top"]:
+            geometry["source_top"]
+            + geometry["height"],
+
+            geometry["source_left"]:
+            geometry["source_left"]
+            + geometry["width"],
+        ]
+
+        full_mask = self.create_soft_mask(
+            self._brush_size
+        )
+
+        patch_mask = full_mask[
+            geometry["mask_top"]:
+            geometry["mask_top"]
+            + geometry["height"],
+
+            geometry["mask_left"]:
+            geometry["mask_left"]
+            + geometry["width"],
+        ]
+
+        destination_slice = np.s_[
+            geometry["destination_top"]:
+            geometry["destination_top"]
+            + geometry["height"],
+
+            geometry["destination_left"]:
+            geometry["destination_left"]
+            + geometry["width"],
+        ]
+
+        current_mask = self._healing_mask[
+            destination_slice
+        ]
+
+        replace_pixels = (
+            patch_mask > current_mask
+        )
+
+        source_layer_patch = (
+            self._healing_source_layer[
+                destination_slice
+            ]
+        )
+
+        source_layer_patch[
+            replace_pixels
+        ] = source_patch[
+            replace_pixels
+        ]
+
+        current_mask[
+            replace_pixels
+        ] = patch_mask[
+            replace_pixels
+        ]
+
+        # Temporary direct-copy preview while dragging.
+        preview_array = qimage_to_rgba_array(
+            self._stroke_before_image
+        )
+
+        mask_alpha = (
+            self._healing_mask.astype(np.float32)
+            / 255.0
+        )[:, :, np.newaxis]
+
+        preview_array = (
+            self._healing_source_layer.astype(np.float32)
+            * mask_alpha
+            + preview_array.astype(np.float32)
+            * (1.0 - mask_alpha)
+        )
+
+        self._working_image = rgba_array_to_qimage(
+            np.clip(
+                preview_array,
+                0,
+                255,
+            ).astype(np.uint8)
+        )
+
+        self.refresh_pixmap()
+
+    def finish_healing_stroke(self) -> None:
+        if (
+            self._healing_source_layer is None
+            or self._healing_mask is None
+        ):
+            return
+
+        nonzero = cv2.findNonZero(
+            self._healing_mask
+        )
+
+        if nonzero is None:
+            return
+
+        x, y, width, height = cv2.boundingRect(
+            nonzero
+        )
+
+        padding = max(
+            4,
+            self._brush_size // 4,
+        )
+
+        x_start = max(
+            0,
+            x - padding,
+        )
+        y_start = max(
+            0,
+            y - padding,
+        )
+
+        x_end = min(
+            self._working_image.width(),
+            x + width + padding,
+        )
+        y_end = min(
+            self._working_image.height(),
+            y + height + padding,
+        )
+
+        destination_rgba = qimage_to_rgba_array(
+            self._stroke_before_image
+        )
+
+        source_rgba = self._healing_source_layer[
+            y_start:y_end,
+            x_start:x_end,
+        ].copy()
+
+        mask = self._healing_mask[
+            y_start:y_end,
+            x_start:x_end,
+        ].copy()
+
+        destination_rgb = cv2.cvtColor(
+            destination_rgba,
+            cv2.COLOR_RGBA2RGB,
+        )
+
+        source_rgb = cv2.cvtColor(
+            source_rgba,
+            cv2.COLOR_RGBA2RGB,
+        )
+
+        # Pixels outside the painted mask need valid source data.
+        destination_crop = destination_rgb[
+            y_start:y_end,
+            x_start:x_end,
+        ]
+
+        outside_mask = mask == 0
+
+        source_rgb[
+            outside_mask
+        ] = destination_crop[
+            outside_mask
+        ]
+
+        center = (
+            x_start + (x_end - x_start) // 2,
+            y_start + (y_end - y_start) // 2,
+        )
+
+        try:
+            healed_rgb = cv2.seamlessClone(
+                source_rgb,
+                destination_rgb,
+                mask,
+                center,
+                cv2.MIXED_CLONE,
+            )
+        except cv2.error:
+            # Fall back to the temporary blended preview if
+            # the selected region is too small or near an edge.
+            return
+
+        healed_rgba = cv2.cvtColor(
+            healed_rgb,
+            cv2.COLOR_RGB2RGBA,
+        )
+
+        healed_rgba[:, :, 3] = (
+            destination_rgba[:, :, 3]
+        )
+
+        self._working_image = rgba_array_to_qimage(
+            healed_rgba
+        )
+
+        self.refresh_pixmap()
 
     def refresh_pixmap(self) -> None:
         self._image_item.setPixmap(
@@ -448,7 +988,11 @@ class CloneStampView(QGraphicsView):
         event: QMouseEvent,
     ) -> None:
         if (
-            self._clone_enabled
+            self._tool
+            in {
+                self.TOOL_CLONE,
+                self.TOOL_HEAL,
+            }
             and event.button()
             == Qt.MouseButton.LeftButton
         ):
